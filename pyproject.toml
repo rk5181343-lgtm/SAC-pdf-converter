@@ -1,5 +1,0 @@
-# Vercel detects a Flask app at app/, app.py, server.py and similar names.
-# This pins the entrypoint so the workspace bundle always points at the same
-# Flask instance, even though the package also has its own module layout.
-[tool.vercel]
-entrypoint = "app.server:app"
