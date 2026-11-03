@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firm PDF Workspace</title>
+<meta name="description" content="PDF to Excel conversion for statements, invoices, ledgers and trial balances, plus the everyday PDF toolbox.">
+<link rel="icon" href="/assets/logo-mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<a class="skip" href="#workspace">Skip to the workspace</a>
+
+<header class="topbar">
+  <div class="brand">
+    <img src="/assets/logo.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <strong>Firm PDF Workspace</strong>
+      <span>Documents in. Spreadsheets out.</span>
+    </div>
+  </div>
+  <nav class="tabs" aria-label="Views">
+    <button class="tab is-active" data-view="tools" type="button">Tools</button>
+    <button class="tab" data-view="library" type="button">Library <span class="pill" id="lib-count">0</span></button>
+    <button class="tab" data-view="privacy" type="button">Privacy</button>
+  </nav>
+  <div class="status" id="status" aria-live="polite"></div>
+</header>
+
+<main>
+  <!-- ------------------------------------------------------------- tools -->
+  <section class="view is-active" id="view-tools">
+    <aside class="toolrail" id="toolrail" aria-label="Tools"></aside>
+
+    <div class="workspace" id="workspace">
+      <div class="panel toolhead">
+        <div>
+          <p class="eyebrow" id="tool-group">Convert</p>
+          <h2 id="tool-title">PDF → Excel</h2>
+          <p class="muted" id="tool-summary">Workbooks with Original Layout, Clean Data and Validation sheets.</p>
+        </div>
+        <span class="badge" id="tool-badge">PDF</span>
+      </div>
+
+      <div class="panel dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose files">
+        <input type="file" id="file-input" hidden multiple>
+        <img src="/assets/logo-mark.svg" alt="" class="drop-mark" width="42" height="42">
+        <p><strong>Drop files here</strong> or <span class="link">browse</span></p>
+        <p class="muted" id="drop-hint">PDF files up to 40&nbsp;MB each.</p>
+      </div>
+
+      <div class="panel" id="files-panel" hidden>
+        <div class="panel-head">
+          <h3>Files</h3>
+          <button class="link danger" id="clear-files" type="button">Remove all</button>
+        </div>
+        <div class="file-list" id="file-list"></div>
+        <div class="pagegrid" id="pagegrid" hidden>
+          <div class="pagegrid-head">
+            <strong>Pages</strong>
+            <span class="muted" id="page-selection">Nothing selected — the whole file is used</span>
+            <div class="pagegrid-actions">
+              <button class="chip" data-pages="all" type="button">Select all</button>
+              <button class="chip" data-pages="invert" type="button">Invert</button>
+              <button class="chip" data-pages="clear" type="button">Clear</button>
+            </div>
+          </div>
+          <div class="pagegrid-body" id="pagegrid-body"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="options-panel" hidden>
+        <div class="panel-head"><h3>Options</h3><span class="muted" id="options-note"></span></div>
+        <div class="options-body" id="options-body"></div>
+      </div>
+
+      <div class="panel runbar" id="runbar" hidden>
+        <button class="primary" id="run" type="button">Run</button>
+        <span class="muted" id="run-meta"></span>
+      </div>
+
+      <div class="panel progress" id="progress-panel" hidden>
+        <div class="panel-head">
+          <h3 id="progress-title">Working…</h3>
+          <span class="muted" id="progress-percent">0%</span>
+        </div>
+        <div class="bar"><span id="progress-fill"></span></div>
+        <p class="muted" id="progress-message"></p>
+      </div>
+
+      <div class="panel" id="results-panel" hidden>
+        <div class="panel-head">
+          <h3>Results</h3>
+          <button class="link" id="start-over" type="button">Start over</button>
+        </div>
+        <div id="results-body"></div>
+      </div>
+
+      <div class="panel lookup" id="lookup-panel" hidden>
+        <div class="panel-head"><h3>Look something up</h3><span class="muted">Powered by Exa</span></div>
+        <form id="lookup-form" class="lookup-form">
+          <input id="lookup-query" type="search" placeholder="e.g. what is a running balance reconciliation?" autocomplete="off">
+          <button class="secondary" type="submit">Search</button>
+        </form>
+        <div id="lookup-results" class="lookup-results"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- library -->
+  <section class="view" id="view-library">
+    <div class="workspace wide">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Shared workspace</p>
+            <h2>Library</h2>
+            <p class="muted">Every batch and every file, available to anyone who can reach this page.</p>
+          </div>
+          <button class="secondary" id="refresh-library" type="button">Refresh</button>
+        </div>
+        <div class="stats" id="library-stats"></div>
+      </div>
+      <div class="panel">
+        <div id="library-list" class="library"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- privacy -->
+  <section class="view" id="view-privacy">
+    <div class="workspace wide">
+      <div class="panel prose">
+        <p class="eyebrow">Before you share the URL</p>
+        <h2>Privacy and access</h2>
+        <ul>
+          <li><strong>No sign-in.</strong> The workspace opens straight into the tools. There is no administrator, no team screen and no per-person account.</li>
+          <li><strong>One shared library.</strong> Every batch is filed under the workspace itself, so anyone using the app sees the same history and can download any file in it.</li>
+          <li><strong>Files stay server-side.</strong> Uploads and outputs are stored in the workspace so a user who loses a laptop can download them again. Files are served only through the app's own routes; there are no public file URLs.</li>
+          <li><strong>Protect the URL.</strong> Anyone who reaches it can upload, convert and read every file. On Vercel, turn on Deployment Protection or put the app behind your network.</li>
+          <li><strong>The library lives in the database.</strong> Without <code>DATABASE_URL</code> the app uses an ephemeral SQLite file: the history is cleared whenever the instance is recycled.</li>
+        </ul>
+        <p class="muted">Conversion never sends document contents anywhere. The optional Exa lookup sends only what you type into its box.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Firm PDF Workspace">
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="#0f6f5c"/>
+  <path d="M10 7h8l5 5v13a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 9 25V8.5A1.5 1.5 0 0 1 10.5 7z" fill="#f4f5f2"/>
+  <path d="M18 7v5h5" fill="none" stroke="#0f6f5c" stroke-width="1.6"/>
+  <g stroke="#0f6f5c" stroke-width="1.5" stroke-linecap="round">
+    <line x1="12" y1="17" x2="17" y2="17"/>
+    <line x1="12" y1="20" x2="21" y2="20"/>
+    <line x1="12" y1="23" x2="19" y2="23"/>
+  </g>
+</svg>
