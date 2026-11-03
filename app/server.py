@@ -29,7 +29,36 @@ def create_app() -> Flask:
     app = Flask(__name__, static_folder="static", static_url_path="/assets")
     app.config["MAX_CONTENT_LENGTH"] = settings.max_upload_mb * 1024 * 1024
     app.config["JSON_SORT_KEYS"] = False
-    init_db()
+
+    # On a serverless host the bundle is read-only and a cold start can happen
+    # before Postgres is reachable, so a missing database must not crash the
+    # import: it is retried per request and reported as 503 for API calls.
+    db_state = {"ready": False}
+
+    def ensure_database() -> None:
+        if not db_state["ready"]:
+            init_db()
+            db_state["ready"] = True
+
+    try:
+        ensure_database()
+    except Exception as exc:  # pragma: no cover - read-only bundle / cold Postgres
+        app.logger.warning("Workspace database is not ready yet: %s", exc)
+
+    @app.before_request
+    def _ensure_database():
+        if db_state["ready"] or not request.path.startswith("/api/"):
+            return None
+        try:
+            ensure_database()
+        except Exception as exc:  # pragma: no cover - depends on the host
+            app.logger.exception("Workspace database unavailable: %s", exc)
+            return _error(
+                "The workspace database is not available. Point DATABASE_URL at a Postgres "
+                "database for this deployment, or make the storage directory writable.",
+                503,
+            )
+        return None
 
     # ------------------------------------------------------------------ pages
     @app.get("/")
@@ -50,6 +79,7 @@ def create_app() -> Flask:
                 "database": settings.database_label,
                 "storage": settings.storage_mode,
                 "jobs": settings.mode_label,
+                "database_ready": db_state["ready"],
                 "ocr": ocr_available(),
                 "exa": exa_search.enabled(),
                 "limits": _limits(),

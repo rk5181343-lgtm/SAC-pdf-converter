@@ -48,9 +48,17 @@ class Settings:
 
         # Storage
         self.database_url = (os.environ.get("DATABASE_URL") or "").strip()
-        self.sqlite_path = _env_path("SQLITE_PATH", BASE_DIR / "data" / "workspace.db")
-        self.storage_dir = _env_path("STORAGE_DIR", BASE_DIR / "data" / "files")
         self.serverless = env_flag("VERCEL") or env_flag("SERVERLESS")
+        # A serverless bundle is read-only, so SQLite has to live in the one
+        # writable place: /tmp. It is ephemeral, which is why production
+        # deployments should set DATABASE_URL to Postgres instead.
+        default_sqlite = (
+            Path("/tmp/firm-workspace/workspace.db")
+            if self.serverless
+            else BASE_DIR / "data" / "workspace.db"
+        )
+        self.sqlite_path = _env_path("SQLITE_PATH", default_sqlite)
+        self.storage_dir = _env_path("STORAGE_DIR", BASE_DIR / "data" / "files")
         # "fs" keeps uploads on disk, "db" keeps them in the database. Serverless
         # runtimes have a read-only bundle and an ephemeral /tmp, so default to
         # the database there.
