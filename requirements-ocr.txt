@@ -1,0 +1,11 @@
+# Optional OCR extras.
+#
+# The app reads text-based PDFs without these packages and reports OCR as
+# unavailable in /api/health. Install them where scanned pages matter:
+#
+#     pip install -r requirements.txt -r requirements-ocr.txt
+#
+# They are kept out of requirements.txt because onnxruntime and its models add
+# hundreds of megabytes, which serverless bundles cannot carry.
+rapidocr-onnxruntime>=1.3.24,<2.0
+numpy>=1.26,<3.0
