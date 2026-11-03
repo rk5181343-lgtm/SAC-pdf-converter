@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Local data (SQLite database and uploaded files)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Tooling
+.vercel/
+.DS_Store
+Thumbs.db
+node_modules/
