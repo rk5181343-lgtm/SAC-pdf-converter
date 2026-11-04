@@ -13,6 +13,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
+import zipfile
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
@@ -134,6 +136,19 @@ def create_app() -> Flask:
             options = _excel_options(options)
         if tool.get("page_ranges"):
             options = {**options, "pages": str(options.get("pages") or "").strip()}
+        # Per-file page ranges: {document id: "1-3,7"}. Anything else is dropped.
+        pages_by_doc = options.get("pages_by_doc")
+        if isinstance(pages_by_doc, dict):
+            options = {
+                **options,
+                "pages_by_doc": {
+                    str(key): str(value)[:120].strip()
+                    for key, value in pages_by_doc.items()
+                    if str(value or "").strip()
+                },
+            }
+        else:
+            options = {key: value for key, value in options.items() if key != "pages_by_doc"}
 
         inputs = library.list_documents(batch_id, library.KIND_INPUT)
         if not inputs:
@@ -246,6 +261,38 @@ def create_app() -> Flask:
         if not library.delete_batch(batch_id):
             return _error("That batch does not exist.", 404)
         return jsonify({"deleted": batch_id})
+
+    @app.get("/api/batches/<batch_id>/download.zip")
+    def download_batch_zip(batch_id: str):
+        """Every output of a batch in one archive."""
+        batch = library.get_batch(batch_id)
+        if not batch:
+            return _error("That batch does not exist.", 404)
+        outputs = library.list_documents(batch_id, "output")
+        if not outputs:
+            return _error("This batch has no results to download yet.", 404)
+        buffer = io.BytesIO()
+        used: dict[str, int] = {}
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for doc in outputs:
+                _document, data = library.read_document(doc["id"])
+                if not data:
+                    continue
+                name = doc.get("filename") or "file"
+                if name in used:
+                    used[name] += 1
+                    stem, dot, suffix = name.partition(".")
+                    name = f"{stem} ({used[name]})" + (f"{dot}{suffix}" if dot else "")
+                else:
+                    used[name] = 0
+                archive.writestr(name, data)
+        if not used:
+            return _error("The files in this batch are no longer readable.", 404)
+        buffer.seek(0)
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", str(batch.get("tool") or "results"))[:60] or "results"
+        return send_file(
+            buffer, mimetype="application/zip", as_attachment=True, download_name=f"{stem}.zip"
+        )
 
     @app.get("/api/library/stats")
     def stats():
@@ -380,6 +427,7 @@ def _excel_options(options: dict) -> dict:
         "ocr": options.get("ocr", "auto"),
         "images": bool(options.get("images", True)),
         "fills": bool(options.get("fills", True)),
+        "pages_by_doc": options.get("pages_by_doc") or {},
         "sheets": {
             "layout": bool(options.get("layout", True)),
             "data": True,
