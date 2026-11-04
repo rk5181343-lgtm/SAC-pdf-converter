@@ -1,33 +1,68 @@
 # Firm PDF Workspace
 
-A small, self-hosted workspace for everyday firm paperwork: drop a PDF in, pick a
-tool, download the result. One Python service (Flask), one page of vanilla
-JavaScript, no build step and no frameworks to keep up with.
+A document workspace for an accounting firm: **PDF → Excel** conversion built for
+statements, invoices, ledgers and trial balances, plus the everyday PDF toolbox
+(merge, split, rotate, compress, OCR, images) — all in one app with a shared
+library that keeps every processed file available for re-download.
 
-Live: **https://sac-pdf-converter.vercel.app**
+There are no accounts, passwords or sign-ins: the app opens straight into the
+tools and everyone who can reach the URL works in the same library. Read
+**Privacy and access** below before you put it on a public address.
 
-## What it does
+## Tools
 
-20 tools in four groups, from the same drop area:
+| Group | Tool | What it does |
+| --- | --- | --- |
+| Convert | PDF → Excel | Workbooks with Original Layout, Clean Data and Validation sheets (see below) |
+| Convert | Images → PDF | JPG/PNG/WebP scans into one PDF, one image per page |
+| Convert | PDF → Images | Every page as PNG/JPG (ZIP for multi-page) |
+| Convert | Make searchable (OCR) | Adds an invisible OCR text layer to scanned PDFs |
+| Convert | PDF → Word | Text-level `.docx` export for editing copy |
+| Convert | PDF → PowerPoint | One slide per page, each page as a full-slide picture |
+| Convert | Extract images | Every picture embedded in the PDF, as PNG/JPG (ZIP) |
+| Convert | Optimize scans | Straighten crooked pages, clean the paper, flatten to black & white |
+| Organise | Merge PDFs | Join several PDFs, in the order shown in the file list |
+| Organise | Split / Extract pages | Page ranges (`1-3,5,8-`) or one PDF per page |
+| Organise | Reorder pages | New order (`3,1,2`), reverse (`5-1`), repeat, drop pages, insert blanks (`0`) |
+| Organise | Rotate pages | 90/180/270 on all or selected pages |
+| Organise | Compress PDF | Re-render at 96/120/150 dpi with JPEG quality control |
+| Layout | Pages per sheet | 2/3/4/6/8/9-up with optional borders, plus booklet imposition |
+| Layout | Change page size | Fit onto A4/A3/A5/Letter/Legal, flip orientation, add margins |
+| Layout | Split multi-page sheets | Cut 2-up/3-up/4-up sheets back into one PDF page per part |
+| Layout | Crop margins | Trim scanner edges / white borders by percentage, on any page range |
+| Layout | Header / footer | Header/footer text and “Page X of Y”, with `(x)` `(y)` `(file)` placeholders |
+| Protect | Watermark | Translucent text (once or tiled) such as “DRAFT” or the client name |
+| Protect | Open a locked file | Uses a password you already have, or removes print/copy restrictions |
+| Protect | Add protection | Adds a password and print/copy/edit permissions |
 
-| Group | Tools |
-| --- | --- |
-| Organise | Merge, split, extract pages, rotate, reorder, compress, crop, N-up |
-| Convert | PDF → Excel, PDF → images, images → PDF, PDF → text, PDF → Word |
-| Secure | Password protect, unlock, redact, watermark, stamp page numbers |
-| Inspect | Page count, metadata, document info, compare two PDFs |
+Tools that work on page ranges — Split / Extract, Reorder, Rotate, Crop, Header /
+footer and Watermark — show the file as a grid of page thumbnails as soon as you
+choose it. Click pages to pick them (Select all / Invert / Clear), click them in
+order for Reorder, and the Pages field stays in step both ways, so what the run
+does is what the grid shows. Every page carries its own `↺` / `↻` buttons, so an
+individual page is turned where it sits — the thumbnail turns as you click, and
+the grid header offers `Rotate all ↺` / `Rotate all ↻` for a whole scan.
 
-Every tool is written against `pypdf`, `pdfminer.six` and Pillow; nothing shells out
-to a binary, so the same code runs on a laptop and on a serverless host.
+## Choosing pages per file
 
-## The pages grid
+A multi-file run gives every PDF its own **Pages** button in the file list. Open
+it, click the pages you want (or Select all / Invert / Clear), and that file —
+and only that file — is trimmed before the tool runs, so a 200-page statement can
+produce a three-page export without a separate split step first. The button then
+shows the chosen range (`Pages 3-5`), and the run bar counts how many files have
+a selection, so the run stays predictable. The trimming happens in the job
+runner (`app/excel_runner.py`) rather than in each tool, which is why every tool
+honours it. The same runner applies the turns you set on the page grid, before
+the page selection, so a turned page keeps the number shown in the grid.
 
-Upload a file and its pages appear as thumbnails in the Pages panel. Each page has
-its own `↺` / `↻` buttons, so a sideways scan is turned where it sits; the counts
-(`Select all`, `Invert`, `Clear`, `Rotate all ↺`, `Rotate all ↻`) sit above the
-grid. Page ranges can be typed per file (`1-3,7`), and both the turns and the
-ranges are applied to the source before the tool runs, so every one of the 20
-tools honours them.
+## One download for everything
+
+Results are listed file by file. Any run that produced more than one file also
+offers **Download all as one ZIP** (`GET /api/batches/<id>/download.zip`), and
+the same ZIP button appears on multi-file batches in the Library. Duplicate
+output names are kept apart (`report.zip`, `report (1).zip`). Tool options are
+remembered per tool in the browser, so a repeat run starts from the settings you
+used last time — password fields are never stored.
 
 ## PDF → Excel
 
