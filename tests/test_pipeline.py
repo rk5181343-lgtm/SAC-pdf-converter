@@ -65,7 +65,8 @@ def test_convert_batch_adds_combined_workbook(statement_pdf):
     combined = _workbook(result["outputs"][2]["data"])
     assert "Summary" in combined.sheetnames
     assert "Validation" in combined.sheetnames
-    assert any(name.startswith("Layout 1.") for name in combined.sheetnames)
+    assert any(name.startswith("Layout 1 ") for name in combined.sheetnames)
+    assert combined.sheetnames.count("Clean Data") == 1
 
 
 def test_convert_batch_reports_bad_file(statement_pdf):
@@ -81,3 +82,43 @@ def test_convert_batch_reports_bad_file(statement_pdf):
 def test_convert_batch_with_nothing_readable_raises():
     with pytest.raises(ValueError):
         convert_batch([{"filename": "broken.pdf", "data": b"not a pdf"}], {})
+
+
+def test_a_multi_page_pdf_keeps_one_layout_sheet(two_page_statement_pdf):
+    output = convert_pdf("statement.pdf", two_page_statement_pdf, {"images": False})
+    workbook = _workbook(output["data"])
+    assert workbook.sheetnames == ["Original Layout", "Clean Data", "Validation"]
+    layout = workbook["Original Layout"]
+    values = [layout.cell(row=row, column=1).value for row in range(1, layout.max_row + 1)]
+    assert "Page 2" in values, "the second page starts below a marker on the same sheet"
+
+
+def test_clean_data_ends_with_the_source_page(two_page_statement_pdf):
+    output = convert_pdf("statement.pdf", two_page_statement_pdf, {"images": False})
+    sheet = _workbook(output["data"])["Clean Data"]
+    headers = [cell.value for cell in sheet[1]]
+    assert headers[-1] == "Source"
+    sources = [sheet.cell(row=row, column=len(headers)).value for row in range(2, sheet.max_row + 1)]
+    assert sources[0] == "Page 1"
+    assert "Page 2" in sources
+    assert sheet.max_row - 1 == 8, "both pages' rows are in the one sheet"
+
+
+def test_opening_and_closing_balances_are_highlighted(statement_pdf):
+    output = convert_pdf("statement.pdf", statement_pdf, {"images": False})
+    sheet = _workbook(output["data"])["Clean Data"]
+    headers = [cell.value for cell in sheet[1]]
+    balance = headers.index("Balance") + 1
+    fills = [
+        str(sheet.cell(row=row, column=balance).fill.fgColor.rgb or "")
+        for row in range(2, sheet.max_row + 1)
+    ]
+    assert any(fill.endswith("FFF1D6") for fill in fills), "opening balance row is tinted"
+    assert any(fill.endswith("DDF0E8") for fill in fills), "closing balance row is tinted"
+
+
+def test_validation_no_longer_reports_the_balance(statement_pdf):
+    output = convert_pdf("statement.pdf", statement_pdf, {"images": False})
+    names = [cell.value for cell in _workbook(output["data"])["Validation"]["A"]]
+    assert "Opening / closing balance" not in names
+    assert "Rows extracted" in names
