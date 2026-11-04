@@ -3,6 +3,9 @@
 The goal of this module is one record per line of the source document, with one
 field per column, and without touching the values themselves: a "1,234.50" stays
 "1,234.50" in the sheet. Typing happens later, when the workbook is written.
+
+Extraction runs page by page, so a statement that continues over several pages
+keeps every page's rows and every record remembers the page it was read from.
 """
 from __future__ import annotations
 
@@ -252,6 +255,7 @@ class ExtractResult:
     pages_with_text: int
     ocr_pages: int
     date_order: str = "dmy"
+    record_pages: list[int] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -521,25 +525,80 @@ def _records_from_lines(lines: list[str], doc_type: str) -> tuple[list[str], lis
 
 
 # --------------------------------------------------------------------- public
+def _signature(columns: list[str]) -> tuple[str, ...]:
+    return tuple(clean_text(column).lower() for column in columns)
+
+
 def extract(source: PdfSource, filename: str = "") -> ExtractResult:
     pages = source.pages()
     if not pages:
         raise ValueError("This PDF has no pages.")
 
     doc_type, confidence = detect_doc_type(filename, pages)
-    tables = [table for page in pages for table in page_tables(page)]
-    picked = _pick_table(tables)
-    columns, records, flags = _records_from_table(picked) if picked else ([], [], [])
     notes: list[str] = []
 
-    if len(records) < 1:
-        line_columns, line_records, line_flags = _records_from_lines(
-            [line for page in pages for line in page.lines], doc_type
+    # One table per page, so a statement that runs over several pages keeps every
+    # page's rows and every row remembers the page it came from. The largest table
+    # decides the columns; matching tables on the other pages continue the set.
+    blocks: list[tuple[int, list[list[str]]]] = []
+    tables_found = 0
+    for page in pages:
+        tables = page_tables(page)
+        tables_found += len(tables)
+        best = _pick_table(tables) if tables else []
+        if best:
+            blocks.append((page.index + 1, best))
+
+    columns: list[str] = []
+    records: list[dict] = []
+    flags: list[bool] = []
+    record_pages: list[int] = []
+
+    if blocks:
+        primary = max(
+            blocks,
+            key=lambda item: (len(item[1]), max((len(row) for row in item[1]), default=0)),
         )
-        if line_records:
-            if records:
-                notes.append("Table rows were too sparse; lines were used instead.")
-            columns, records, flags = line_columns, line_records, line_flags
+        signature: tuple[str, ...] | None = None
+        collected: list[tuple[int, int, dict, bool]] = []
+        for number, table in [primary] + [block for block in blocks if block is not primary]:
+            page_columns, page_records, page_flags = _records_from_table(table)
+            if not page_records:
+                continue
+            if signature is None:
+                signature = _signature(page_columns)
+                columns = page_columns
+            elif _signature(page_columns) != signature:
+                notes.append(
+                    f"Page {number} has a different table layout; those rows were left out."
+                )
+                continue
+            collected.extend(
+                (number, index, record, flag)
+                for index, (record, flag) in enumerate(zip(page_records, page_flags))
+            )
+        collected.sort(key=lambda item: (item[0], item[1]))
+        records = [item[2] for item in collected]
+        flags = [item[3] for item in collected]
+        record_pages = [item[0] for item in collected]
+
+    if not records:
+        # No ruled table: read the lines, still one block per page for the pages.
+        for page in pages:
+            page_columns, page_records, page_flags = _records_from_lines(page.lines, doc_type)
+            if not page_records:
+                continue
+            if not columns:
+                columns = page_columns
+            elif _signature(page_columns) != _signature(columns):
+                notes.append(f"Page {page.index + 1} has different columns; its lines were skipped.")
+                continue
+            records.extend({column: record.get(column, "") for column in columns} for record in page_records)
+            flags.extend(page_flags)
+            record_pages.extend([page.index + 1] * len(page_records))
+        if records:
+            notes.append("No ruled table was found; the lines were read instead.")
+
     if not records:
         notes.append("No tabular rows were found on these pages.")
 
@@ -553,10 +612,11 @@ def extract(source: PdfSource, filename: str = "") -> ExtractResult:
         records=records,
         total_flags=flags,
         roles=roles,
-        tables_found=len(tables),
+        tables_found=tables_found,
         pages_total=len(pages),
         pages_with_text=sum(1 for page in pages if page.has_text),
         ocr_pages=sum(1 for page in pages if page.ocr_used),
         date_order=order,
+        record_pages=record_pages,
         notes=notes,
     )
