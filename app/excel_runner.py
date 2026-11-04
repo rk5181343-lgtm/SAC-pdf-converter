@@ -221,14 +221,27 @@ def _process(tool_id: str, document_ids: list[str], options: dict) -> list[dict]
     pages_by_doc = options.pop("pages_by_doc", None) or {}
     if not isinstance(pages_by_doc, dict):
         pages_by_doc = {}
+    # Per-page rotation from the thumbnail grid: the turns are applied to the
+    # source before the page selection, because the grid numbers the pages as
+    # they were uploaded.
+    rotate_by_doc = options.pop("rotate_by_doc", None) or {}
+    if not isinstance(rotate_by_doc, dict):
+        rotate_by_doc = {}
 
     files = []
     for doc_id in document_ids:
         document, data = library.read_document(doc_id)
         if not document:
             raise FileNotFoundError(f"Document {doc_id} is no longer in the library.")
+        is_pdf = bool(data) and data[:5].startswith(b"%PDF")
+        turns = rotate_by_doc.get(doc_id)
+        if is_pdf and isinstance(turns, dict) and turns:
+            try:
+                data = _rotate_pdf(data, turns)
+            except Exception as exc:
+                raise ValueError(f"{document['filename']}: could not rotate pages ({exc})") from exc
         spec = str(pages_by_doc.get(doc_id) or "").strip()
-        if spec and data and data[:5].startswith(b"%PDF"):
+        if spec and is_pdf:
             try:
                 data = _subset_pdf(data, spec)
             except Exception as exc:
@@ -264,6 +277,37 @@ def _subset_pdf(data: bytes, spec: str) -> bytes:
     writer = PdfWriter()
     for index in wanted:
         writer.add_page(reader.pages[index])
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def _rotate_pdf(data: bytes, rotations: dict) -> bytes:
+    """Turn individual pages by quarter turns: ``{"3": 90, "5": -90}``."""
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(BytesIO(data))
+    total = len(reader.pages)
+    angles: dict[int, int] = {}
+    for key, value in rotations.items():
+        try:
+            page = int(str(key).strip())
+            turn = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= page <= total:
+            angles[page - 1] = (angles.get(page - 1, 0) + turn) % 360
+    if not any(angles.values()):
+        return data
+
+    writer = PdfWriter()
+    for index, source in enumerate(reader.pages):
+        page = writer.add_page(source)
+        turn = angles.get(index)
+        if turn:
+            page.rotate(turn)
     buffer = BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
