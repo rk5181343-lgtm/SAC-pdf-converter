@@ -214,11 +214,25 @@ def _run_step(job: dict) -> None:
 
 
 def _process(tool_id: str, document_ids: list[str], options: dict) -> list[dict]:
+    options = dict(options or {})
+    # Per-file page selection: the UI lets each file pick its own pages, and the
+    # chosen pages are trimmed off here so every tool inherits the behaviour
+    # instead of each handler re-implementing it.
+    pages_by_doc = options.pop("pages_by_doc", None) or {}
+    if not isinstance(pages_by_doc, dict):
+        pages_by_doc = {}
+
     files = []
     for doc_id in document_ids:
         document, data = library.read_document(doc_id)
         if not document:
             raise FileNotFoundError(f"Document {doc_id} is no longer in the library.")
+        spec = str(pages_by_doc.get(doc_id) or "").strip()
+        if spec and data and data[:5].startswith(b"%PDF"):
+            try:
+                data = _subset_pdf(data, spec)
+            except Exception as exc:
+                raise ValueError(f"{document['filename']}: could not select pages ({exc})") from exc
         files.append({"filename": document["filename"], "data": data, "mimetype": document["mimetype"]})
 
     if tool_id == "pdf-to-excel":
@@ -228,6 +242,31 @@ def _process(tool_id: str, document_ids: list[str], options: dict) -> list[dict]
         return result["outputs"]
 
     return run_tool(tool_id, files, options)
+
+
+def _subset_pdf(data: bytes, spec: str) -> bytes:
+    """Keep only the pages named by ``spec`` (``1-3,7``), in the given order."""
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+
+    from app.tools.pdf_ops import _ranges
+
+    reader = PdfReader(BytesIO(data))
+    total = len(reader.pages)
+    wanted: list[int] = []
+    for group in _ranges(spec, total):
+        for index in group:
+            if index not in wanted:
+                wanted.append(index)
+    if not wanted or len(wanted) >= total:
+        return data
+    writer = PdfWriter()
+    for index in wanted:
+        writer.add_page(reader.pages[index])
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 def _finish(job: dict) -> None:
