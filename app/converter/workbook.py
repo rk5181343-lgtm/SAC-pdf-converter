@@ -1,29 +1,35 @@
 """Assemble the .xlsx workbook.
 
-Three sheets per source file, in this order:
+Three sheets per source document, in this order:
 
 ``Original Layout``
-    the page rebuilt in cells, with fills, fonts and embedded images;
+    every page of the document rebuilt in cells, one after another on a single
+    sheet (with a page marker between pages), fills, fonts and images included;
 ``Clean Data``
-    one record per row, real dates and numbers, frozen header, autofilter;
+    one record per row, real dates and numbers, frozen header, autofilter, and a
+    last ``Source`` column naming the page each row came from. The opening and
+    closing balance rows are highlighted here rather than reported separately;
 ``Validation``
     the financial checks and their verdicts.
 
-A combined workbook (many files in, one workbook out) adds a ``Summary`` sheet
-and one data/layout block per file.
+A combined workbook (many files in, one workbook out) adds a ``Summary`` sheet,
+one stacked layout sheet per file and one ``Clean Data`` sheet holding every
+file's rows, with ``Source`` naming both the file and the page.
 """
 from __future__ import annotations
 
 import io
+import re
 from datetime import date, datetime
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.converter.extract import ExtractResult, parse_date, parse_number
-from app.converter.layout import SheetLayout
+from app.converter.layout import GridCell, GridImage, SheetLayout
 from app.converter.validation import ERROR, NA, PASSED, WARNING, Check, summarise
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -38,8 +44,17 @@ STATUS_STYLE = {
     ERROR: ("FBE3E4", "9C1C1C"),
     NA: ("EEF1F4", "5A6772"),
 }
+# Opening and closing balance rows: tint plus a dark text colour of the same hue.
+BALANCE_STYLE = {
+    "opening": ("FFF1D6", "7A4B00"),
+    "closing": ("DDF0E8", "0F5A50"),
+}
+SOURCE_HEADER = "Source"
 THIN = Side(style="thin", color="D5DBE3")
 BORDER = Border(bottom=THIN)
+
+OPENING_PATTERN = re.compile(r"opening balance|balance b/?f\b|brought forward", re.IGNORECASE)
+CLOSING_PATTERN = re.compile(r"closing balance|balance c/?f\b|carried forward", re.IGNORECASE)
 
 
 # -------------------------------------------------------------------- building
@@ -49,8 +64,9 @@ def build(result: ExtractResult, layouts: list[SheetLayout], checks: list[Check]
     sheets = options.get("sheets") or {}
 
     if sheets.get("layout", True):
-        for layout in layouts:
-            _layout_sheet(wb.create_sheet(_sheet_name(layout.name)), layout)
+        stacked = _stack_layouts(layouts)
+        if stacked is not None and not stacked.is_empty():
+            _layout_sheet(wb.create_sheet("Original Layout"), stacked)
     if sheets.get("data", True):
         _data_sheet(wb.create_sheet("Clean Data"), result)
     if sheets.get("validation", True):
@@ -72,14 +88,16 @@ def build_combined(analyses: list[dict], options: dict) -> bytes:
     _summary_sheet(wb.create_sheet("Summary"), analyses)
 
     for index, analysis in enumerate(analyses, start=1):
+        if not sheets.get("layout", True):
+            break
+        stacked = _stack_layouts(analysis["layouts"])
+        if stacked is None or stacked.is_empty():
+            continue
         stem = _stem(analysis["filename"])
-        if sheets.get("layout", True):
-            for page, layout in enumerate(analysis["layouts"], start=1):
-                name = _sheet_name(f"Layout {index}.{page} {stem}")
-                _layout_sheet(wb.create_sheet(name), layout)
-        if sheets.get("data", True):
-            _data_sheet(wb.create_sheet(_sheet_name(f"Data {index} {stem}")), analysis["extract"])
+        _layout_sheet(wb.create_sheet(_sheet_name(f"Layout {index} {stem}")), stacked)
 
+    if sheets.get("data", True):
+        _combined_data_sheet(wb.create_sheet("Clean Data"), analyses)
     if sheets.get("validation", True):
         _combined_validation_sheet(wb.create_sheet("Validation"), analyses)
 
@@ -94,6 +112,43 @@ def output_name(filename: str) -> str:
 
 
 # ---------------------------------------------------------------------- sheets
+def _stack_layouts(layouts: list[SheetLayout]) -> SheetLayout | None:
+    """Every page of one document on a single sheet, in page order."""
+    if not layouts:
+        return None
+    stacked = SheetLayout(name="Original Layout")
+    offset = 0
+    for index, layout in enumerate(layouts):
+        if index:
+            # One blank row, then a page marker, so pages never run together.
+            marker = offset + 1
+            stacked.cells[(marker, 0)] = GridCell(
+                value=f"Page {index + 1}", bold=True, size=9, fill="E8EDF3"
+            )
+            stacked.row_heights[marker] = 15.0
+            offset = marker + 1
+        for (row, col), cell in layout.cells.items():
+            stacked.cells[(row + offset, col)] = cell
+        for row, height in layout.row_heights.items():
+            stacked.row_heights[row + offset] = height
+        for col, width in layout.col_widths.items():
+            stacked.col_widths[col] = max(stacked.col_widths.get(col, 0.0), width)
+        for image in layout.images:
+            stacked.images.append(
+                GridImage(
+                    row=image.row + offset,
+                    col=image.col,
+                    data=image.data,
+                    width=image.width,
+                    height=image.height,
+                )
+            )
+        stacked.rows = max(stacked.rows, offset + layout.rows)
+        stacked.cols = max(stacked.cols, layout.cols)
+        offset += layout.rows
+    return stacked
+
+
 def _layout_sheet(ws, layout: SheetLayout) -> None:
     for (row, col), cell in layout.cells.items():
         target = ws.cell(row=row + 1, column=col + 1, value=_safe_text(cell.value))
@@ -119,56 +174,119 @@ def _layout_sheet(ws, layout: SheetLayout) -> None:
     ws.sheet_view.showGridLines = False
 
 
-def _data_sheet(ws, result: ExtractResult) -> None:
-    columns = result.columns
+def _data_sheet(ws, result: ExtractResult, source_prefix: str = "") -> None:
+    marks = _balance_marks(result)
+    rows = [
+        {
+            "record": record,
+            "result": result,
+            "source": _source_label(result, index, source_prefix),
+            "is_total": is_total,
+            "mark": marks.get(index),
+        }
+        for index, (record, is_total) in enumerate(zip(result.records, result.total_flags))
+    ]
+    _write_data(ws, list(result.columns), rows)
+
+
+def _combined_data_sheet(ws, analyses: list[dict]) -> None:
+    """One sheet for every file: shared columns where they agree, then extras."""
+    columns: list[str] = []
+    for analysis in analyses:
+        for column in analysis["extract"].columns:
+            if column not in columns:
+                columns.append(column)
+
+    rows: list[dict] = []
+    for analysis in analyses:
+        result = analysis["extract"]
+        marks = _balance_marks(result)
+        prefix = _stem(analysis["filename"])
+        for index, (record, is_total) in enumerate(zip(result.records, result.total_flags)):
+            rows.append(
+                {
+                    "record": record,
+                    "result": result,
+                    "source": _source_label(result, index, prefix),
+                    "is_total": is_total,
+                    "mark": marks.get(index),
+                }
+            )
+    _write_data(ws, columns, rows)
+
+
+def _write_data(ws, columns: list[str], rows: list[dict]) -> None:
     if not columns:
         ws["A1"] = "No tabular rows were found on these pages."
         ws["A1"].font = Font(name="Calibri", size=11, italic=True, color=INK_SOFT)
         ws.column_dimensions["A"].width = 60
         return
 
-    number_columns = {
-        index
-        for role, index in result.roles.items()
-        if index is not None and role in ("amount", "debit", "credit", "balance")
-    }
-    date_column = result.roles.get("date")
-    text_column = result.roles.get("description")
-
-    for col, column in enumerate(columns, start=1):
-        header = ws.cell(row=1, column=col, value=column)
+    headers = list(columns) + [SOURCE_HEADER]
+    for col, name in enumerate(headers, start=1):
+        header = ws.cell(row=1, column=col, value=name)
         header.font = HEADER_FONT
         header.fill = HEADER_FILL
         header.alignment = Alignment(horizontal="left", vertical="center")
         header.border = BORDER
     ws.row_dimensions[1].height = 18
 
-    for row_index, record in enumerate(result.records, start=2):
-        is_total = result.total_flags[row_index - 2] if row_index - 2 < len(result.total_flags) else False
+    widths = {name: len(name) for name in headers}
+
+    for row_index, row in enumerate(rows, start=2):
+        result = row["result"]
+        number_columns = _numeric_columns(result)
+        date_column = _date_column(result)
+        balance_column = _role_column(result, "balance")
+        mark = row.get("mark")
+        source = str(row.get("source") or "")
+
         for col, column in enumerate(columns, start=1):
-            raw = record.get(column, "")
-            value, number_format = _typed(raw, col - 1 == date_column, col - 1 in number_columns, result.date_order)
+            raw = row["record"].get(column, "")
+            value, number_format = _typed(
+                raw, column == date_column, column in number_columns, result.date_order
+            )
             cell = ws.cell(row=row_index, column=col, value=value)
-            cell.font = Font(name="Calibri", size=10, bold=is_total, color=INK_SOFT)
             if number_format:
                 cell.number_format = number_format
                 cell.alignment = Alignment(horizontal="right", vertical="top")
-            elif col - 1 == text_column:
-                cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=False)
             else:
                 cell.alignment = Alignment(horizontal="left", vertical="top")
+            if mark:
+                fill, colour = BALANCE_STYLE[mark]
+                cell.fill = PatternFill("solid", fgColor=fill)
+                cell.font = Font(name="Calibri", size=10, bold=True, color=colour)
+                if column == balance_column and value is not None:
+                    cell.comment = Comment(
+                        f"{mark.capitalize()} balance exactly as printed"
+                        + (f" ({source})." if source else "."),
+                        "Firm PDF Workspace",
+                    )
+            else:
+                cell.font = Font(
+                    name="Calibri", size=10, bold=bool(row.get("is_total")), color=INK_SOFT
+                )
             cell.border = BORDER
+            widths[column] = max(widths[column], len(str(raw)))
+
+        source_cell = ws.cell(row=row_index, column=len(columns) + 1, value=source)
+        source_cell.alignment = Alignment(horizontal="left", vertical="top")
+        source_cell.border = BORDER
+        if mark:
+            fill, colour = BALANCE_STYLE[mark]
+            source_cell.fill = PatternFill("solid", fgColor=fill)
+            source_cell.font = Font(name="Calibri", size=9, bold=True, color=colour)
+        else:
+            source_cell.font = Font(name="Calibri", size=9, color=INK_SOFT)
+        widths[SOURCE_HEADER] = max(widths[SOURCE_HEADER], len(source))
 
     ws.freeze_panes = "A2"
-    if result.records:
-        last_column = get_column_letter(len(columns))
-        ws.auto_filter.ref = f"A1:{last_column}{len(result.records) + 1}"
+    if rows:
+        last_column = get_column_letter(len(headers))
+        ws.auto_filter.ref = f"A1:{last_column}{len(rows) + 1}"
 
-    for col, column in enumerate(columns, start=1):
-        longest = len(column)
-        for record in result.records[:400]:
-            longest = max(longest, len(str(record.get(column, ""))))
-        ws.column_dimensions[get_column_letter(col)].width = float(min(max(10, longest + 2), 52))
+    for col, name in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = float(min(max(10, widths[name] + 2), 52))
 
 
 def _validation_sheet(ws, checks: list[Check]) -> None:
@@ -262,6 +380,73 @@ def _summary_sheet(ws, analyses: list[dict]) -> None:
 
 
 # --------------------------------------------------------------------- helpers
+def _balance_marks(result: ExtractResult) -> dict[int, str]:
+    """Which record is the opening balance and which is the closing balance.
+
+    A statement usually prints both lines, and they are found by their wording.
+    When it does not, the first and last row carrying a balance are used, so the
+    highlight still lands on something an accountant recognises.
+    """
+    if not result.records:
+        return {}
+    opening: int | None = None
+    closing: int | None = None
+    for index, record in enumerate(result.records):
+        text = " ".join(str(value) for value in record.values())
+        if opening is None and OPENING_PATTERN.search(text):
+            opening = index
+        if CLOSING_PATTERN.search(text):
+            closing = index
+
+    balance_column = _role_column(result, "balance")
+    readable = []
+    if balance_column:
+        readable = [
+            index
+            for index, record in enumerate(result.records)
+            if parse_number(record.get(balance_column)) is not None
+        ]
+    if opening is None:
+        opening = readable[0] if readable else 0
+    if closing is None:
+        closing = readable[-1] if readable else len(result.records) - 1
+
+    marks: dict[int, str] = {}
+    if opening != closing:
+        marks[opening] = "opening"
+    marks[closing] = "closing"
+    return marks
+
+
+def _source_label(result: ExtractResult, index: int, prefix: str = "") -> str:
+    pages = result.record_pages
+    page = pages[index] if index < len(pages) else None
+    label = f"Page {page}" if page else ""
+    if prefix and label:
+        return f"{prefix} · {label}"
+    return prefix or label
+
+
+def _role_column(result: ExtractResult, role: str) -> str | None:
+    index = result.roles.get(role)
+    if index is None or index >= len(result.columns):
+        return None
+    return result.columns[index]
+
+
+def _numeric_columns(result: ExtractResult) -> set[str]:
+    return {
+        column
+        for role in ("amount", "debit", "credit", "balance")
+        for column in [_role_column(result, role)]
+        if column
+    }
+
+
+def _date_column(result: ExtractResult) -> str | None:
+    return _role_column(result, "date")
+
+
 def _typed(raw: str, is_date: bool, is_number: bool, date_order: str):
     text = "" if raw is None else str(raw)
     if not text.strip():
