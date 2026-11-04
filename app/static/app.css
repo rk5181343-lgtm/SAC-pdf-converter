@@ -294,6 +294,10 @@ button { font-family: inherit; }
   cursor: pointer;
 }
 .chip:hover { background: #eef1ee; }
+.file .chip { font-size: 0.74rem; padding: 3px 9px; }
+.chip.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.zip-row { margin: 12px 0 4px; }
+.zip-row a { display: inline-block; }
 .icon-button { border: 0; background: transparent; color: var(--ink-faint); cursor: pointer; padding: 4px 8px; border-radius: 6px; }
 .icon-button:hover { background: #f3e4e4; color: var(--danger); }
 
