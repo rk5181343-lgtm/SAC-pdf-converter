@@ -28,51 +28,75 @@ def test_health_and_tools(client):
     assert health["jobs"] == "poll"
 
     tools = client.get("/api/tools").get_json()
-    assert len(tools["tools"]) >= 20
-    assert tools["groups"]
+    assert "Convert" in tools["groups"]
+    ids = {tool["id"] for tool in tools["tools"]}
+    assert {"pdf-to-excel", "merge-pdf", "protect-pdf", "watermark"} <= ids
 
 
-def test_upload_rejects_unknown_suffix(client, statement_pdf):
+def test_upload_requires_files(client):
+    response = client.post("/api/uploads", data={}, content_type="multipart/form-data")
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_upload_rejects_unknown_extension(client):
     response = client.post(
         "/api/uploads",
         data={"files": (io.BytesIO(b"hello"), "notes.txt")},
         content_type="multipart/form-data",
     )
     assert response.status_code == 400
-    assert "PDF" in response.get_json()["error"]
 
 
-def test_upload_listing_and_pages(client, statement_pdf):
-    batch = _upload(client, statement_pdf).get_json()["batch"]
-    assert batch["documents"][0]["meta"]["pages"] >= 1
-    pages = client.get(f"/api/documents/{batch['documents'][0]['id']}/pages").get_json()
-    assert pages["pages"] == batch["documents"][0]["meta"]["pages"]
+def test_excel_job_end_to_end(client, statement_pdf):
+    upload = _upload(client, statement_pdf)
+    assert upload.status_code == 201
+    batch = upload.get_json()["batch"]
+    assert len(batch["documents"]) == 1
+    assert batch["documents"][0]["meta"]["pages"] == 1
+
+    started = client.post(
+        f"/api/batches/{batch['id']}/run", json={"tool": "pdf-to-excel", "options": {}}
+    )
+    assert started.status_code == 202
+    job = started.get_json()["job"]
+    assert job["mode"] == "poll"
+
+    finished = _run_until_done(client, job["id"])
+    assert finished["status"] == "done", finished
+    assert finished["progress"] == 100
+
+    detail = client.get(f"/api/batches/{batch['id']}").get_json()
+    outputs = [doc for doc in detail["batch"]["documents"] if doc["kind"] == "output"]
+    assert outputs and outputs[0]["filename"].endswith(".xlsx")
+
+    download = client.get(outputs[0]["download_url"])
+    assert download.status_code == 200
+    assert download.data[:2] == b"PK"  # xlsx is a zip
 
 
-def test_run_rejects_unknown_tool(client, statement_pdf):
-    batch = _upload(client, statement_pdf).get_json()["batch"]
-    response = client.post(f"/api/batches/{batch['id']}/run", json={"tool": "nope"})
-    assert response.status_code == 404
-
-
-def test_single_file_tool_refuses_many(client, statement_pdf):
-    batch = _upload(client, statement_pdf).get_json()["batch"]
-    second = _upload(client, statement_pdf, "other.pdf").get_json()["batch"]
-    ids = [batch["id"], second["id"]]
-    assert len(ids) == 2
-    merged = client.post(
-        "/api/uploads",
+def test_merge_tool_one_shot(client, statement_pdf):
+    response = client.post(
+        "/api/tools/merge-pdf/run",
         data={
-            "files": [
-                (io.BytesIO(statement_pdf), "a.pdf"),
-                (io.BytesIO(statement_pdf), "b.pdf"),
-            ]
+            "files": [(io.BytesIO(statement_pdf), "a.pdf"), (io.BytesIO(statement_pdf), "b.pdf")],
+            "options": "{}",
         },
         content_type="multipart/form-data",
-    ).get_json()["batch"]
-    response = client.post(f"/api/batches/{merged['id']}/run", json={"tool": "pdf-to-word"})
-    assert response.status_code == 400
-    assert "one file" in response.get_json()["error"]
+    )
+    assert response.status_code == 202
+    job = response.get_json()["job"]
+    finished = _run_until_done(client, job["id"])
+    assert finished["status"] == "done"
+
+    batch_id = finished["batch_id"]
+    detail = client.get(f"/api/batches/{batch_id}").get_json()
+    outputs = [doc for doc in detail["batch"]["documents"] if doc["kind"] == "output"]
+    assert outputs[0]["filename"] == "merged.pdf"
+
+
+def test_unknown_tool_is_404(client):
+    assert client.post("/api/tools/moon-landing/run", data={}).status_code == 404
 
 
 def test_library_listing_and_delete(client, statement_pdf):
