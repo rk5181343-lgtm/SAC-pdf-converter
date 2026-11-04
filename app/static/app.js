@@ -12,6 +12,8 @@ const state = {
   job: null,
   files: [],
   pages: new Set(),
+  pagesByDoc: {},
+  gridDoc: null,
   pageOrder: [],
   preview: null,
   totalPages: 0,
@@ -96,6 +98,33 @@ function compressRanges(pages) {
   }
   parts.push(start === previous ? `${start}` : `${start}-${previous}`);
   return parts.join(",");
+}
+
+function filePagesSpec(docId) {
+  const set = state.pagesByDoc[docId];
+  return set && set.size ? compressRanges(set) : "";
+}
+
+/* Options are remembered per tool, so a repeated run does not start over. */
+function savedOptions(toolId) {
+  try {
+    return JSON.parse(window.localStorage.getItem(`firmpdf.options.${toolId}`) || "{}") || {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function rememberOptions(toolId, options) {
+  const keep = {};
+  for (const [key, value] of Object.entries(options || {})) {
+    if (key === "password" || key === "owner_password") continue;
+    keep[key] = value;
+  }
+  try {
+    window.localStorage.setItem(`firmpdf.options.${toolId}`, JSON.stringify(keep));
+  } catch (_error) {
+    /* storage blocked or full */
+  }
 }
 
 /* --------------------------------------------------------------------- boot */
@@ -230,6 +259,8 @@ function selectTool(id) {
   state.batch = null;
   state.job = null;
   state.pages = new Set();
+  state.pagesByDoc = {};
+  state.gridDoc = null;
   state.pageOrder = [];
   state.preview = null;
   state.totalPages = 0;
@@ -263,8 +294,12 @@ function updatePanels() {
   $("options-panel").hidden = !state.tool || !state.tool.options.length;
   $("runbar").hidden = !hasFiles;
   $("run").disabled = !hasFiles || state.running;
+  const picked = Object.values(state.pagesByDoc).filter((set) => set && set.size).length;
+  const rangeNote = state.tool && state.tool.page_ranges && !state.tool.multiple
+    ? " · pages chosen below apply to the run"
+    : "";
   $("run-meta").textContent = hasFiles
-    ? `${state.files.length} file(s) ready${state.tool.page_ranges ? " · pages chosen below apply to the run" : ""}`
+    ? `${state.files.length} file(s) ready${picked ? ` · pages chosen for ${picked} file(s)` : ""}${rangeNote}`
     : "";
 }
 
@@ -293,6 +328,8 @@ async function handleFiles(fileList) {
     state.batch = payload.batch;
     state.files = payload.batch.documents || [];
     state.pages = new Set();
+    state.pagesByDoc = {};
+    state.gridDoc = null;
     state.pageOrder = [];
     renderFiles();
     updatePanels();
@@ -308,22 +345,36 @@ function renderFiles() {
   list.innerHTML = "";
   state.files.forEach((file) => {
     const pages = file.meta && file.meta.pages ? `${file.meta.pages} page(s) · ` : "";
-    list.appendChild(
-      el("div", { class: "file" }, [
-        el("span", { class: "file-icon", text: isImage(file.filename) ? "IMG" : "PDF" }),
-        el("div", { class: "file-main" }, [
-          el("div", { class: "file-name", text: file.filename }),
-          el("div", { class: "file-meta", text: `${pages}${bytes(file.size)}` }),
-        ]),
+    const perFile = Boolean(state.tool && state.tool.multiple && /\.pdf$/i.test(file.filename));
+    const spec = filePagesSpec(file.id);
+    const children = [
+      el("span", { class: "file-icon", text: isImage(file.filename) ? "IMG" : "PDF" }),
+      el("div", { class: "file-main" }, [
+        el("div", { class: "file-name", text: file.filename }),
+        el("div", { class: "file-meta", text: `${pages}${bytes(file.size)}${spec ? ` · pages ${spec}` : ""}` }),
+      ]),
+    ];
+    if (perFile) {
+      children.push(
         el("button", {
-          class: "icon-button",
+          class: `chip${spec ? " is-on" : ""}`,
           type: "button",
-          title: "Remove file",
-          text: "✕",
-          onclick: () => removeFile(file.id),
-        }),
-      ])
+          title: "Choose pages for this file",
+          text: spec ? `Pages ${spec}` : "Pages",
+          onclick: () => openPageGrid(file.id),
+        })
+      );
+    }
+    children.push(
+      el("button", {
+        class: "icon-button",
+        type: "button",
+        title: "Remove file",
+        text: "✕",
+        onclick: () => removeFile(file.id),
+      })
     );
+    list.appendChild(el("div", { class: "file" }, children));
   });
 }
 
@@ -334,6 +385,14 @@ async function removeFile(id) {
     /* already gone */
   }
   state.files = state.files.filter((file) => file.id !== id);
+  delete state.pagesByDoc[id];
+  if (state.gridDoc === id) {
+    state.gridDoc = null;
+    state.totalPages = 0;
+    state.pages = new Set();
+    $("pagegrid").hidden = true;
+    $("pagegrid-body").innerHTML = "";
+  }
   if (!state.files.length) {
     resetUpload();
     return;
@@ -348,6 +407,8 @@ async function resetUpload() {
   state.files = [];
   state.batch = null;
   state.pages = new Set();
+  state.pagesByDoc = {};
+  state.gridDoc = null;
   state.pageOrder = [];
   state.preview = null;
   state.totalPages = 0;
@@ -372,25 +433,35 @@ function discardDraft() {
 }
 
 /* ---------------------------------------------------------------- page grid */
-async function loadPageGrid() {
-  const pdf = state.files.find((file) => /\.pdf$/i.test(file.filename));
+async function loadPageGrid(docId) {
+  const pdf = docId
+    ? state.files.find((file) => file.id === docId)
+    : state.files.find((file) => /\.pdf$/i.test(file.filename));
   if (!pdf) {
     $("pagegrid").hidden = true;
     return;
   }
+  if (!docId && state.gridDoc === pdf.id && state.totalPages) return;
   try {
     const payload = await api(`/api/documents/${pdf.id}/pages`);
     state.preview = pdf.id;
+    state.gridDoc = pdf.id;
     state.totalPages = payload.pages;
-    state.pages = new Set();
     state.pageOrder = [];
+    state.pages = new Set(state.pagesByDoc[pdf.id] || []);
+    $("pagegrid-title").textContent = `Pages · ${pdf.filename}`;
     renderPageGrid();
     $("pagegrid").hidden = false;
+    paintSelection();
     syncPageField();
   } catch (error) {
     $("pagegrid").hidden = true;
     setStatus(error.message, "error");
   }
+}
+
+function openPageGrid(docId) {
+  loadPageGrid(docId);
 }
 
 function renderPageGrid() {
@@ -419,13 +490,21 @@ function togglePage(page) {
     const index = state.pageOrder.indexOf(page);
     if (index === -1) state.pageOrder.push(page);
     else state.pageOrder.splice(index, 1);
-  } else if (state.pages.has(page)) {
-    state.pages.delete(page);
-  } else {
-    state.pages.add(page);
+    paintSelection();
+    syncPageField();
+    return;
   }
+  if (!state.gridDoc) return;
+  const set = new Set(state.pagesByDoc[state.gridDoc] || []);
+  if (set.has(page)) set.delete(page);
+  else set.add(page);
+  if (set.size) state.pagesByDoc[state.gridDoc] = set;
+  else delete state.pagesByDoc[state.gridDoc];
+  state.pages = set;
   paintSelection();
   syncPageField();
+  renderFiles();
+  updatePanels();
 }
 
 function paintSelection() {
@@ -441,7 +520,9 @@ function paintSelection() {
   const count = state.tool && state.tool.id === "reorder-pages" ? state.pageOrder.length : state.pages.size;
   $("page-selection").textContent = count
     ? `${count} page(s) selected`
-    : "Nothing selected — the whole file is used";
+    : state.gridDoc && state.tool && state.tool.multiple
+      ? "Nothing selected — this file is used in full"
+      : "Nothing selected — the whole file is used";
 }
 
 function pageAction(action) {
@@ -461,12 +542,21 @@ function pageAction(action) {
   } else {
     state.pages = new Set();
   }
+  if (state.tool.id !== "reorder-pages" && state.gridDoc) {
+    if (state.pages.size) state.pagesByDoc[state.gridDoc] = state.pages;
+    else delete state.pagesByDoc[state.gridDoc];
+  }
   paintSelection();
   syncPageField();
+  if (state.tool.id !== "reorder-pages") {
+    renderFiles();
+    updatePanels();
+  }
 }
 
 function syncPageField() {
   if (!state.tool) return;
+  if (state.tool.multiple) return;  // per-file pages travel separately
   const name = state.tool.id === "reorder-pages" ? "order" : "pages";
   const input = document.querySelector(`[data-option="${name}"]`);
   if (!input) return;
@@ -480,16 +570,21 @@ function renderOptions() {
   body.innerHTML = "";
   state.options = {};
   const tool = state.tool;
+  const saved = savedOptions(tool.id);
   $("options-note").textContent = tool.page_ranges
     ? "Choose pages in the grid above, or type a range here."
-    : "";
+    : tool.multiple
+      ? "Use “Pages” next to a file to convert only part of it."
+      : "";
   for (const option of tool.options || []) {
-    state.options[option.name] = option.default;
+    const initial = Object.prototype.hasOwnProperty.call(saved, option.name) ? saved[option.name] : option.default;
+    state.options[option.name] = initial;
     if (option.type === "bool") {
       const input = el("input", { type: "checkbox", "data-option": option.name });
-      input.checked = Boolean(option.default);
+      input.checked = Boolean(initial);
       input.addEventListener("change", () => {
         state.options[option.name] = input.checked;
+        rememberOptions(tool.id, state.options);
         if (option.name === "angle") renderPageGrid();
       });
       body.appendChild(el("label", { class: "option switch" }, [input, el("label", { text: option.label })]));
@@ -501,7 +596,7 @@ function renderOptions() {
       input = el("select", { "data-option": option.name });
       for (const choice of option.choices || []) {
         const node = el("option", { value: choice, text: choice });
-        if (String(choice) === String(option.default)) node.selected = true;
+        if (String(choice) === String(initial)) node.selected = true;
         input.appendChild(node);
       }
     } else {
@@ -509,13 +604,14 @@ function renderOptions() {
       input = el("input", {
         type,
         "data-option": option.name,
-        value: option.default === undefined || option.default === null ? "" : String(option.default),
+        value: initial === undefined || initial === null ? "" : String(initial),
       });
       if (option.min !== undefined && option.min !== null) input.min = option.min;
       if (option.max !== undefined && option.max !== null) input.max = option.max;
     }
     input.addEventListener("change", () => {
       state.options[option.name] = option.type === "number" ? Number(input.value) : input.value;
+      rememberOptions(tool.id, state.options);
       if (option.name === "angle") renderPageGrid();
       if (option.name === "pages" && input.value.trim() === "") {
         state.pages = new Set();
@@ -548,6 +644,13 @@ function collectOptions() {
   }
   for (const key of ["pages", "order"]) {
     if (options[key] !== undefined) options[key] = String(options[key] || "").trim();
+  }
+  if (state.tool.multiple) {
+    const byDoc = {};
+    for (const [docId, set] of Object.entries(state.pagesByDoc)) {
+      if (set && set.size) byDoc[docId] = compressRanges(set);
+    }
+    if (Object.keys(byDoc).length) options.pages_by_doc = byDoc;
   }
   return options;
 }
@@ -676,6 +779,19 @@ function renderResults(batch, job) {
     );
   }
 
+  if (outputs.length > 1) {
+    body.appendChild(
+      el("div", { class: "zip-row" }, [
+        el("a", {
+          class: "primary download",
+          href: `/api/batches/${batch.id}/download.zip`,
+          text: `Download all ${outputs.length} as one ZIP`,
+          download: `${batch.tool || "results"}.zip`,
+        }),
+      ])
+    );
+  }
+
   const inputsNote = el("p", {
     class: "muted",
     text: `${inputs.length} source file(s) kept in the library · ${batch.title}`,
@@ -741,6 +857,15 @@ function renderLibrary() {
         el("div", { class: "batch-meta", text: `${toolLabel(batch.tool)} · ${batch.created_at.replace("T", " ").replace("Z", "")} · ${inputs} in / ${outputs} out` }),
       ]),
       el("div", { class: "batch-actions" }, [
+        outputs > 1
+          ? el("a", {
+              class: "chip",
+              href: `/api/batches/${batch.id}/download.zip`,
+              text: "ZIP",
+              title: "Download every result in this batch as a ZIP",
+              download: `${batch.tool || "results"}.zip`,
+            })
+          : null,
         el("button", {
           class: "chip",
           type: "button",
