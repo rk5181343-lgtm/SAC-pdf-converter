@@ -4,6 +4,9 @@ Every check answers a question an accountant would ask of the converted sheet,
 and every check is allowed to say "Not Applicable" instead of inventing a
 verdict. Source values are never modified to make a check agree: a mismatch is
 reported, not reconciled.
+
+The opening and closing balances are not a check: they are highlighted in place
+on the Clean Data sheet, where the accountant can see them against the rows.
 """
 from __future__ import annotations
 
@@ -33,7 +36,6 @@ def validate(result: ExtractResult) -> list[Check]:
         _columns_check(result),
         _amounts_check(result),
         _totals_check(result),
-        _balance_check(result),
         _running_balance_check(result),
         _duplicates_check(result),
         _dates_check(result),
@@ -142,37 +144,6 @@ def _totals_check(result: ExtractResult) -> Check:
     if abs(difference) < 0.005:
         return Check("Debit equals credit", PASSED, detail)
     return Check("Debit equals credit", ERROR, detail + " Source values were left unchanged.")
-
-
-def _balance_check(result: ExtractResult) -> Check:
-    balance_index = result.roles.get("balance")
-    if balance_index is None:
-        return Check("Opening / closing balance", NA, "The document has no balance column.")
-    column = result.columns[balance_index]
-    balances = [
-        value
-        for record, is_total in zip(result.records, result.total_flags)
-        if not is_total
-        for value in [parse_number(record.get(column))]
-        if value is not None
-    ]
-    if len(balances) < 2:
-        return Check("Opening / closing balance", WARNING, "Fewer than two balance values were readable.")
-
-    opening, closing = balances[0], balances[-1]
-    movement = round(sum(result.numeric_values("amount")), 2)
-    stated = round(closing - opening, 2)
-    detail = f"Opening {opening:,.2f}, closing {closing:,.2f}, movement {stated:,.2f}."
-    if not result.numeric_values("amount"):
-        return Check("Opening / closing balance", PASSED, detail + " No amount column to reconcile against.")
-    if abs(stated - movement) < 0.02:
-        return Check("Opening / closing balance", PASSED, detail + f" Amounts total {movement:,.2f}.")
-    return Check(
-        "Opening / closing balance",
-        WARNING,
-        detail + f" Amounts total {movement:,.2f}; the {round(stated - movement, 2):,.2f} gap may be "
-        "opening entries, transfers or unreadable rows.",
-    )
 
 
 def _running_balance_check(result: ExtractResult) -> Check:
