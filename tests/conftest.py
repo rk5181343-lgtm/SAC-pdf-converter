@@ -27,12 +27,7 @@ ROWS = [
 ]
 
 
-def build_statement_pdf() -> bytes:
-    """A one-page statement with a ruled table, so tables and lines both exist."""
-    buffer = io.BytesIO()
-    page = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-
+def _draw_page(page, rows: list[tuple[str, ...]], height: float) -> None:
     page.setFont("Helvetica-Bold", 14)
     page.drawString(60, height - 50, "Northwind Supplies Ltd")
     page.setFont("Helvetica", 10)
@@ -45,7 +40,7 @@ def build_statement_pdf() -> bytes:
     top = height - 120
 
     page.setFont("Helvetica", 9)
-    for index, row in enumerate(ROWS):
+    for index, row in enumerate(rows):
         x = x0
         baseline = top - index * row_height - row_height + 8
         for column, cell in enumerate(row):
@@ -53,8 +48,8 @@ def build_statement_pdf() -> bytes:
             x += widths[column]
 
     total_width = sum(widths)
-    table_bottom = top - len(ROWS) * row_height
-    for index in range(len(ROWS) + 1):
+    table_bottom = top - len(rows) * row_height
+    for index in range(len(rows) + 1):
         y = top - index * row_height
         page.line(x0, y, x0 + total_width, y)
     x = x0
@@ -64,13 +59,33 @@ def build_statement_pdf() -> bytes:
     page.line(x0 + total_width, top, x0 + total_width, table_bottom)
 
     page.showPage()
-    page.save()
+
+
+def build_statement_pdf(pages: int = 1) -> bytes:
+    """A statement with a ruled table; later pages repeat the same columns."""
+    buffer = io.BytesIO()
+    doc = canvas.Canvas(buffer, pagesize=A4)
+    _width, height = A4
+    for number in range(pages):
+        if number == 0:
+            rows = list(ROWS)
+        else:
+            rows = [ROWS[0]] + [
+                (row[0], f"{row[1]} p{number + 1}", row[2], row[3]) for row in ROWS[1:]
+            ]
+        _draw_page(doc, rows, height)
+    doc.save()
     return buffer.getvalue()
 
 
 @pytest.fixture(scope="session")
 def statement_pdf() -> bytes:
     return build_statement_pdf()
+
+
+@pytest.fixture(scope="session")
+def two_page_statement_pdf() -> bytes:
+    return build_statement_pdf(pages=2)
 
 
 @pytest.fixture()
