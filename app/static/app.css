@@ -176,6 +176,9 @@ main { padding: 24px 28px 64px; }
 }
 .dropzone:hover, .dropzone:focus-visible, .dropzone.is-dragging { border-color: var(--accent); background: var(--accent-soft); outline: none; }
 .drop-mark { opacity: 0.7; }
+.dropzone.is-compact { padding: 13px 18px; gap: 2px; }
+.dropzone.is-compact .drop-mark { display: none; }
+.dropzone.is-compact p { margin: 0; font-size: 0.86rem; }
 .link { color: var(--accent); text-decoration: underline; cursor: pointer; background: none; border: 0; font: inherit; padding: 0; }
 .link.danger { color: var(--danger); }
 
