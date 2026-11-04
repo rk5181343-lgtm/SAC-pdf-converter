@@ -42,6 +42,26 @@ order for Reorder, and the Pages field stays in step both ways, so what the run
 does is what the grid shows. The rotation chosen for Rotate pages is drawn on the
 thumbnails before you run it.
 
+## Choosing pages per file
+
+A multi-file run gives every PDF its own **Pages** button in the file list. Open
+it, click the pages you want (or Select all / Invert / Clear), and that file —
+and only that file — is trimmed before the tool runs, so a 200-page statement can
+produce a three-page export without a separate split step first. The button then
+shows the chosen range (`Pages 3-5`), and the run bar counts how many files have
+a selection, so the run stays predictable. The trimming happens in the job
+runner (`app/excel_runner.py`) rather than in each tool, which is why every tool
+honours it.
+
+## One download for everything
+
+Results are listed file by file. Any run that produced more than one file also
+offers **Download all as one ZIP** (`GET /api/batches/<id>/download.zip`), and
+the same ZIP button appears on multi-file batches in the Library. Duplicate
+output names are kept apart (`report.zip`, `report (1).zip`). Tool options are
+remembered per tool in the browser, so a repeat run starts from the settings you
+used last time — password fields are never stored.
+
 ## PDF → Excel
 
 Every source file produces a workbook with three sheets:
@@ -63,3 +83,16 @@ library download and a test.
 
 Not included: converting Word/Excel/PowerPoint **to** PDF. That needs LibreOffice,
 which cannot run inside the serverless Python runtime this app is deployed on.
+
+## Privacy and access
+
+- **No sign-in.** The workspace opens straight into the tools; there is no
+  administrator and no per-person account.
+- **One shared library.** Every batch is filed under the workspace itself, so
+  anyone who reaches the app sees the same history and can download any file in
+  it. Protect the URL (Vercel Deployment Protection, or your own network).
+- **Files stay server-side.** Uploads and outputs live in the workspace and are
+  served only through the app's own routes; there are no public file URLs.
+- **Set `DATABASE_URL` for a durable library.** Without it the app uses SQLite;
+  on Vercel that file lives in `/tmp`, so the history is lost whenever the
+  instance is recycled.
