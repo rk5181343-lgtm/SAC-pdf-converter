@@ -13,6 +13,7 @@ const state = {
   files: [],
   pages: new Set(),
   pagesByDoc: {},
+  rotations: {},
   gridDoc: null,
   pageOrder: [],
   preview: null,
@@ -229,6 +230,20 @@ function bindShell() {
     button.addEventListener("click", () => pageAction(button.dataset.pages));
   });
 
+  // Turn a whole file at once, next to the page-selection helpers.
+  const gridActions = document.querySelector(".pagegrid-actions");
+  if (gridActions && !gridActions.dataset.turns) {
+    gridActions.dataset.turns = "1";
+    [
+      ["-90", "Rotate all ↺", "Turn every page in this file to the left"],
+      ["90", "Rotate all ↻", "Turn every page in this file to the right"],
+    ].forEach(([step, label, title]) =>
+      gridActions.appendChild(
+        el("button", { class: "chip", type: "button", title, text: label, onclick: () => rotateAll(Number(step)) })
+      )
+    );
+  }
+
   $("lookup-form").addEventListener("submit", runLookup);
 }
 
@@ -282,6 +297,7 @@ function selectTool(id) {
   state.job = null;
   state.pages = new Set();
   state.pagesByDoc = {};
+  state.rotations = {};
   state.gridDoc = null;
   state.pageOrder = [];
   state.preview = null;
@@ -369,6 +385,7 @@ async function handleFiles(fileList) {
     state.files = payload.batch.documents || [];
     state.pages = new Set();
     state.pagesByDoc = {};
+    state.rotations = {};
     state.gridDoc = null;
     state.pageOrder = [];
     renderFiles();
@@ -440,6 +457,7 @@ async function removeFile(id) {
   }
   state.files = state.files.filter((file) => file.id !== id);
   delete state.pagesByDoc[id];
+  delete state.rotations[id];
   if (state.gridDoc === id) {
     state.gridDoc = null;
     state.totalPages = 0;
@@ -462,6 +480,7 @@ async function resetUpload() {
   state.batch = null;
   state.pages = new Set();
   state.pagesByDoc = {};
+  state.rotations = {};
   state.gridDoc = null;
   state.pageOrder = [];
   state.preview = null;
@@ -518,12 +537,18 @@ function openPageGrid(docId) {
   loadPageGrid(docId);
 }
 
+function pageAngle(page) {
+  const map = state.gridDoc ? state.rotations[state.gridDoc] : null;
+  return (map && Number(map[page])) || 0;
+}
+
 function renderPageGrid() {
   if (!state.preview) return;
   const body = $("pagegrid-body");
   body.innerHTML = "";
   const angle = Number((state.options && state.options.angle) || 0);
   for (let page = 1; page <= state.totalPages; page += 1) {
+    const turned = pageAngle(page);
     const thumb = el("img", {
       src: `/api/documents/${state.preview}/thumb/${page}`,
       alt: `Page ${page}`,
@@ -531,12 +556,69 @@ function renderPageGrid() {
     });
     if (state.tool && state.tool.id === "rotate-pages" && angle) {
       thumb.style.transform = `rotate(${angle}deg)`;
+    } else if (turned) {
+      thumb.style.transform = `rotate(${turned}deg)`;
     }
     const button = el("button", { class: "page", type: "button", "data-page": page }, [thumb, el("span", { text: `Page ${page}` })]);
     button.addEventListener("click", () => togglePage(page));
-    body.appendChild(button);
+    const controls = el("div", { class: "page-rotate" }, [
+      el("button", {
+        class: "rotate",
+        type: "button",
+        title: `Rotate page ${page} left`,
+        "data-rotate": "left",
+        text: "↺",
+        onclick: (event) => {
+          event.stopPropagation();
+          rotatePage(page, -90);
+        },
+      }),
+      el("button", {
+        class: "rotate",
+        type: "button",
+        title: `Rotate page ${page} right`,
+        "data-rotate": "right",
+        text: "↻",
+        onclick: (event) => {
+          event.stopPropagation();
+          rotatePage(page, 90);
+        },
+      }),
+    ]);
+    body.appendChild(el("div", { class: `page-cell${turned ? " is-rotated" : ""}` }, [button, controls]));
   }
   paintSelection();
+}
+
+/* Per-page rotation: the thumbnail turns immediately, and the angles travel
+   with the run, so the converted output matches what the grid shows. */
+function rotatePage(page, delta) {
+  const doc = state.gridDoc;
+  if (!doc) return;
+  const map = { ...(state.rotations[doc] || {}) };
+  const next = ((Number(map[page]) || 0) + delta + 360) % 360;
+  if (next) map[page] = next;
+  else delete map[page];
+  if (Object.keys(map).length) state.rotations[doc] = map;
+  else delete state.rotations[doc];
+  renderPageGrid();
+  const count = Object.keys(map).length;
+  setStatus(count ? `${count} page(s) turned in this file.` : "Rotation cleared for this file.");
+}
+
+function rotateAll(delta) {
+  const doc = state.gridDoc;
+  if (!doc || !state.totalPages) return;
+  const map = { ...(state.rotations[doc] || {}) };
+  for (let page = 1; page <= state.totalPages; page += 1) {
+    const next = ((Number(map[page]) || 0) + delta + 360) % 360;
+    if (next) map[page] = next;
+    else delete map[page];
+  }
+  if (Object.keys(map).length) state.rotations[doc] = map;
+  else delete state.rotations[doc];
+  renderPageGrid();
+  setStatus(delta > 0 ? "Every page turned right." : "Every page turned left.");
 }
 
 function togglePage(page) {
@@ -706,6 +788,11 @@ function collectOptions() {
     }
     if (Object.keys(byDoc).length) options.pages_by_doc = byDoc;
   }
+  const turns = {};
+  for (const [docId, pages] of Object.entries(state.rotations)) {
+    if (pages && Object.keys(pages).length) turns[docId] = { ...pages };
+  }
+  if (Object.keys(turns).length) options.rotate_by_doc = turns;
   return options;
 }
 
