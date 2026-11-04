@@ -291,10 +291,11 @@ function selectTool(id) {
   $("tool-title").textContent = tool.label;
   $("tool-summary").textContent = tool.summary;
   $("tool-badge").textContent = tool.accepts === "images" ? "Images" : "PDF";
-  $("drop-hint").textContent =
+  state.dropHint =
     tool.accepts === "images"
       ? `PNG, JPG or WebP up to ${state.health ? state.health.limits.upload_mb : 40} MB each.`
       : `PDF files up to ${state.health ? state.health.limits.upload_mb : 40} MB each, ${state.health ? state.health.limits.pages : 150} pages max per file.`;
+  $("drop-hint").textContent = state.dropHint;
   $("file-input").accept = tool.accepts === "images" ? "image/*" : ".pdf,application/pdf";
 
   const runButton = $("run");
@@ -311,7 +312,14 @@ function selectTool(id) {
 
 function updatePanels() {
   const hasFiles = state.files.length > 0;
-  $("dropzone").hidden = hasFiles;
+  // The drop area stays at the top of the workspace, so the convert button,
+  // the progress and the download all sit below the place files arrive and the
+  // next statement can be dropped without scrolling past the results.
+  $("dropzone").hidden = false;
+  $("dropzone").classList.toggle("is-compact", hasFiles);
+  $("drop-hint").textContent = hasFiles
+    ? "Drop files here to replace this set, or browse."
+    : state.dropHint || "";
   $("files-panel").hidden = !hasFiles;
   $("options-panel").hidden = !state.tool || !state.tool.options.length;
   $("runbar").hidden = !hasFiles;
