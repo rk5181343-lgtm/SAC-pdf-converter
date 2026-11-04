@@ -149,6 +149,9 @@ def create_app() -> Flask:
             }
         else:
             options = {key: value for key, value in options.items() if key != "pages_by_doc"}
+        # Per-page rotation from the thumbnail grid. Anything that is not a
+        # quarter turn is dropped, so a typo cannot skew a page.
+        options = {**options, "rotate_by_doc": _rotate_map(options.get("rotate_by_doc"))}
 
         inputs = library.list_documents(batch_id, library.KIND_INPUT)
         if not inputs:
@@ -428,12 +431,34 @@ def _excel_options(options: dict) -> dict:
         "images": bool(options.get("images", True)),
         "fills": bool(options.get("fills", True)),
         "pages_by_doc": options.get("pages_by_doc") or {},
+        "rotate_by_doc": options.get("rotate_by_doc") or {},
         "sheets": {
             "layout": bool(options.get("layout", True)),
             "data": True,
             "validation": True,
         },
     }
+
+
+def _rotate_map(raw) -> dict:
+    """Keep only real quarter turns: ``{document id: {"3": 90}}``."""
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: dict[str, dict[str, int]] = {}
+    for doc_key, per_page in list(raw.items())[:60]:
+        if not isinstance(per_page, dict):
+            continue
+        angles: dict[str, int] = {}
+        for page_key, value in list(per_page.items())[:400]:
+            try:
+                angle = int(value) % 360
+            except (TypeError, ValueError):
+                continue
+            if angle in (90, 180, 270):
+                angles[str(page_key)[:12]] = angle
+        if angles:
+            cleaned[str(doc_key)[:64]] = angles
+    return cleaned
 
 
 def _batch_title(files) -> str:
