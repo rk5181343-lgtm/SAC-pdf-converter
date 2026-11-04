@@ -68,8 +68,13 @@ class Settings:
         # serverless function the browser drives the job forward instead.
         self.background_threads = env_flag("BACKGROUND_THREADS", default=not self.serverless)
 
-        # Limits
-        self.max_upload_mb = int(os.environ.get("MAX_UPLOAD_MB") or 40)
+        # Limits. A serverless host rejects a large request body before the app
+        # runs, which the browser reports as a dropped connection rather than an
+        # error message — so stay under the platform body limit there and let
+        # the app answer with a real 413. MAX_UPLOAD_MB always wins.
+        configured_mb = int(os.environ.get("MAX_UPLOAD_MB") or 40)
+        explicit_mb = "MAX_UPLOAD_MB" in os.environ
+        self.max_upload_mb = configured_mb if explicit_mb or not self.serverless else min(configured_mb, 4)
         self.max_pages = int(os.environ.get("MAX_PAGES") or 150)
         self.max_files_per_run = int(os.environ.get("MAX_FILES_PER_RUN") or 25)
 
