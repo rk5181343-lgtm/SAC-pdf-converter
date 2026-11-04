@@ -29,7 +29,16 @@ const $ = (id) => document.getElementById(id);
 
 /* ------------------------------------------------------------------ helpers */
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (_error) {
+    const dropped = new Error(
+      "The connection dropped before the server answered, so nothing was saved. Try again."
+    );
+    dropped.network = true;
+    throw dropped;
+  }
   let payload = {};
   try {
     payload = await response.json();
@@ -37,9 +46,22 @@ async function api(path, options = {}) {
     payload = {};
   }
   if (!response.ok) {
-    throw new Error(payload.error || `Request failed (${response.status})`);
+    throw new Error(payload.error || fallbackMessage(response.status));
   }
   return payload;
+}
+
+/* A host can answer with a plain-text error page, so give those a real meaning
+   instead of a bare status code. */
+function fallbackMessage(status) {
+  const limitMb = state.health && state.health.limits ? state.health.limits.upload_mb : 4;
+  if (status === 413) {
+    return `That upload is bigger than this deployment accepts (${limitMb} MB per request). Send fewer files at a time.`;
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return "The server is not answering yet (a new version may be deploying). Wait a few seconds and try again.";
+  }
+  return `Request failed (${status})`;
 }
 
 function el(tag, attrs = {}, children = []) {
@@ -319,12 +341,22 @@ async function handleFiles(fileList) {
     return;
   }
 
+  const limitMb = state.health && state.health.limits ? state.health.limits.upload_mb : 40;
+  const totalMb = accepted.reduce((sum, file) => sum + file.size, 0) / (1024 * 1024);
+  if (totalMb > limitMb) {
+    setStatus(
+      `Those files total ${totalMb.toFixed(1)} MB and this deployment accepts ${limitMb} MB per upload. Send them in smaller groups.`,
+      "error"
+    );
+    return;
+  }
+
   discardDraft();
   setStatus("Uploading…");
   const form = new FormData();
   accepted.forEach((file) => form.append("files", file));
   try {
-    const payload = await api("/api/uploads", { method: "POST", body: form });
+    const payload = await uploadWithRetry(form);
     state.batch = payload.batch;
     state.files = payload.batch.documents || [];
     state.pages = new Set();
@@ -337,6 +369,20 @@ async function handleFiles(fileList) {
     if (tool.page_ranges) await loadPageGrid();
   } catch (error) {
     setStatus(error.message, "error");
+  }
+}
+
+/* Nothing is committed server-side until the 201 comes back, so a dropped
+   connection (cold start, deploy swap, a flaky link) is worth exactly one retry
+   with an explanation rather than a bare browser error. */
+async function uploadWithRetry(form) {
+  try {
+    return await api("/api/uploads", { method: "POST", body: form });
+  } catch (error) {
+    if (!error.network) throw error;
+    setStatus("The upload was interrupted — trying once more…");
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return api("/api/uploads", { method: "POST", body: form });
   }
 }
 
