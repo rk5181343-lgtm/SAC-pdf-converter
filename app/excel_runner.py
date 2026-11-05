@@ -368,8 +368,8 @@ def _save(job_id: str, payload: dict, *, status: str, message: str, progress: in
 
 def _update(job_id: str, *, status: str, message: str, progress: int) -> None:
     get_db().execute(
-        "UPDATE jobs SET status = ?, progress = ?, message = ?, payload = ?, updated_at = ? WHERE id = ?",
-        (status, max(0, min(int(progress), 100)), message, json.dumps(payload), library.now_iso(), job_id),
+        "UPDATE jobs SET status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?",
+        (status, max(0, min(int(progress), 100)), message, library.now_iso(), job_id),
     )
 
 
