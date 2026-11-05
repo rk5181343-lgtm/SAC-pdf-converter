@@ -299,6 +299,35 @@ function markActiveTool() {
   );
 }
 
+// The one action a run has: files in, results out. It is labelled with what the
+// tool does, so the workspace never offers a vague "Run" next to a Convert.
+const ACTION_LABELS = {
+  "pdf-to-excel": "Convert to Excel",
+  "images-to-pdf": "Convert to PDF",
+  "pdf-to-images": "Convert to images",
+  "ocr-pdf": "Make searchable",
+  "pdf-to-word": "Convert to Word",
+  "pdf-to-powerpoint": "Convert to PowerPoint",
+  "extract-images": "Extract images",
+  "optimize-scans": "Clean up scan",
+  "merge-pdf": "Merge PDFs",
+  "split-pdf": "Split pages",
+  "reorder-pages": "Reorder pages",
+  "rotate-pages": "Rotate pages",
+  "compress-pdf": "Compress PDF",
+  "pages-per-sheet": "Build sheets",
+  "change-page-size": "Change page size",
+  "split-sheets": "Split sheets",
+  "crop-margins": "Crop margins",
+  "header-footer": "Add header / footer",
+  "watermark": "Add watermark",
+  "protect-pdf": "Add protection",
+};
+
+function actionLabel(tool) {
+  return ACTION_LABELS[tool.id] || tool.label;
+}
+
 function selectTool(id) {
   if (!id) return;
   const tool = state.tools.find((item) => item.id === id);
@@ -335,7 +364,7 @@ function selectTool(id) {
   $("file-input").accept = tool.accepts === "images" ? "image/*" : ".pdf,application/pdf";
 
   const runButton = $("run");
-  runButton.textContent = tool.id === "pdf-to-excel" ? "Convert to Excel" : "Run";
+  runButton.textContent = actionLabel(tool);
   runButton.disabled = true;
 
   renderOptions();
@@ -423,7 +452,7 @@ async function handleFiles(fileList) {
     state.pageOrder = [];
     renderFiles();
     updatePanels();
-    setStatus("Uploaded. Set the options and run.", "ok");
+    setStatus("Uploaded. Check the options, then press the button below.", "ok");
     if (tool.page_ranges) await loadPageGrid();
   } catch (error) {
     setStatus(error.message, "error");
