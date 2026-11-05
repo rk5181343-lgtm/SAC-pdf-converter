@@ -287,7 +287,9 @@ def _subset_pdf(data: bytes, spec: str) -> bytes:
         for index in group:
             if index not in wanted:
                 wanted.append(index)
-    if not wanted or len(wanted) >= total:
+    # A whole document in a different order is still a change, so only an
+    # untouched run of every page in its own order is handed back as it came in.
+    if not wanted or wanted == list(range(total)):
         return data
     writer = PdfWriter()
     for index in wanted:

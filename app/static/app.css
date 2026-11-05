@@ -284,6 +284,11 @@ main { padding: 24px 28px 64px; }
 .page-cell { position: relative; display: flex; }
 .page-cell .page { width: 100%; }
 .page-cell.is-rotated .page { border-color: var(--teal); }
+/* Hold a page and drop it where it belongs; the grid order is the output order. */
+.page-cell.is-draggable { cursor: grab; }
+.page-cell.is-draggable:active { cursor: grabbing; }
+.page-cell.is-dragging { opacity: 0.4; }
+.page-cell.is-drop .page { border-color: var(--accent); background: var(--accent-soft); }
 .page-rotate { position: absolute; right: 6px; bottom: 26px; display: flex; gap: 4px; opacity: 0; transition: opacity 0.12s ease; }
 .page-cell:hover .page-rotate, .page-cell:focus-within .page-rotate { opacity: 1; }
 .rotate {

@@ -100,6 +100,30 @@ def test_pages_by_doc_also_trims_a_pdf_to_excel_run(client, two_page_statement_p
     assert all("p2" in text for text in descriptions), descriptions
 
 
+def test_pages_by_doc_can_reorder_the_whole_statement(client, two_page_statement_pdf):
+    """Holding a page and dropping it elsewhere changes the order of the rows."""
+    from openpyxl import load_workbook
+
+    batch = _upload(client, two_page_statement_pdf, "two pages.pdf")
+    doc_id = batch["documents"][0]["id"]
+
+    started = client.post(
+        f"/api/batches/{batch['id']}/run",
+        json={"tool": "pdf-to-excel", "options": {"pages_by_doc": {doc_id: "2,1"}}},
+    )
+    assert started.status_code == 202
+    finished = _finish(client, started.get_json()["job"]["id"])
+    assert finished["status"] == "done", finished
+
+    outputs = _outputs(client, batch["id"])
+    workbook = load_workbook(io.BytesIO(client.get(outputs[0]["download_url"]).data))
+    rows = list(workbook["Clean Data"].iter_rows(min_row=2, values_only=True))
+    descriptions = [str(row[1]) for row in rows if row[1]]
+    assert any("p2" in text for text in descriptions), descriptions
+    assert "p2" in descriptions[0], descriptions  # page 2 now comes first
+    assert "p2" not in descriptions[-1], descriptions
+
+
 def test_pages_by_doc_is_ignored_when_absent(client, three_page_pdf):
     batch = _upload(client, three_page_pdf, "all pages.pdf")
     started = client.post(
