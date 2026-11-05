@@ -14,7 +14,7 @@ tools and everyone who can reach the URL works in the same library. Read
 | Group | Tool | What it does |
 | --- | --- | --- |
 | Convert | PDF → Excel | Workbooks with Original Layout, Clean Data and Validation sheets (see below) |
-| Convert | Images → PDF | JPG/PNG/WebP scans into one PDF, one image per page |
+| Convert | Images → PDF | JPG/PNG/WebP (and phone photos) into one PDF, one image per page; big pictures are resized in the browser so they fit the upload limit |
 | Convert | PDF → Images | Every page as PNG/JPG (ZIP for multi-page) |
 | Convert | Make searchable (OCR) | Adds an invisible OCR text layer to scanned PDFs |
 | Convert | PDF → Word | Text-level `.docx` export for editing copy |
@@ -32,7 +32,6 @@ tools and everyone who can reach the URL works in the same library. Read
 | Layout | Crop margins | Trim scanner edges / white borders by percentage, on any page range |
 | Layout | Header / footer | Header/footer text and “Page X of Y”, with `(x)` `(y)` `(file)` placeholders |
 | Protect | Watermark | Translucent text (once or tiled) such as “DRAFT” or the client name |
-| Protect | Open a locked file | Uses a password you already have, or removes print/copy restrictions |
 | Protect | Add protection | Adds a password and print/copy/edit permissions |
 
 Tools that work on page ranges — Split / Extract, Reorder, Rotate, Crop, Header /
@@ -64,6 +63,14 @@ output names are kept apart (`report.zip`, `report (1).zip`). Tool options are
 remembered per tool in the browser, so a repeat run starts from the settings you
 used last time — password fields are never stored.
 
+## Locked PDFs
+
+There is no separate unlock step. Pick the tool, choose the file, and if the PDF
+needs a password the page asks for it on the spot — the password opens the file
+for that run only and is never written to the library or to the browser's
+storage. Thumbnails and the page grid accept the same password, so the grid shows
+the pages you are about to convert.
+
 ## PDF → Excel
 
 Every source file produces a workbook with three sheets:
@@ -71,7 +78,7 @@ Every source file produces a workbook with three sheets:
 | Sheet | Purpose |
 | --- | --- |
 | **Original Layout** | Every page of the document recreated in Excel cells on one sheet: headings, table structure, fills, fonts, row heights and embedded images, one page after another with a `Page 2`, `Page 3` … marker between them. Can be switched off for a faster, smaller workbook. |
-| **Clean Data** | One record per row, one field per column, for every page of every file. Real Excel dates, numeric amounts, frozen header, autofilter — ready for `SUM`, pivots, sort and copy/paste. The opening and closing balance rows are highlighted in place (amber and teal, with a note on the balance cell), and the last column, `Source`, names the page the row was read from (`Page 3`, or `jan · Page 3` in a combined workbook). |
+| **Clean Data** | One record per row, one field per column, for every page of every file. Real Excel dates, numeric amounts, frozen header, autofilter — ready for `SUM`, pivots, sort and copy/paste. The opening and closing balance rows are highlighted in place (amber and teal, with a note on the balance cell) — only where the statement itself prints them (`Opening balance`, `Brought forward`, `Balance b/f`, `Closing balance`, `Carried forward`, `Balance c/f`); a page with no such line never gets a tinted transaction. The last column, `Source`, names the page the row was read from (`Page 3`, or `jan · Page 3` in a combined workbook). |
 | **Validation** | Counts, totals, running-balance chain, duplicates and page coverage — each `Passed` / `Warning` / `Error` / `Not Applicable`. Source values are never altered to make totals agree. |
 
 How it works, in one page: `app/converter/pdf_source.py` opens the PDF once and
