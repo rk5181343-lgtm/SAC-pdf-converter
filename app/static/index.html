@@ -74,6 +74,19 @@
         <div class="options-body" id="options-body"></div>
       </div>
 
+      <div class="panel" id="password-panel" hidden>
+        <div class="panel-head">
+          <h3>This PDF is locked</h3>
+          <span class="muted" id="password-note"></span>
+        </div>
+        <form id="password-form" class="password-form">
+          <input id="password-input" type="password" placeholder="PDF password" autocomplete="off" aria-label="PDF password">
+          <button class="primary" type="submit">Use password</button>
+          <button class="secondary" type="button" id="password-cancel">Cancel</button>
+        </form>
+        <p class="muted">The password is used for this run only. It is never stored in the library or in this browser.</p>
+      </div>
+
       <div class="panel runbar" id="runbar" hidden>
         <button class="primary" id="run" type="button">Run</button>
         <span class="muted" id="run-meta"></span>
