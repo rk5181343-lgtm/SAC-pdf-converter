@@ -24,7 +24,10 @@ from app.db import init_db
 from app.tools import all_tools, groups, tool_or_none
 
 PDF_EXTENSIONS = {".pdf"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".jfif", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+# Photos straight off a phone: the server's Pillow cannot decode them, so the
+# browser converts them first. Reaching here means that conversion failed.
+UNDECODABLE_IMAGE_EXTENSIONS = {".heic", ".heif", ".avif"}
 
 
 def create_app() -> Flask:
@@ -334,10 +337,13 @@ def create_app() -> Flask:
         from app.converter.pdf_source import PdfError, PdfSource
 
         try:
+            data = _unlocked(data)
             with PdfSource(data, ocr_mode="never") as source:
                 return jsonify({"pages": source.page_count, "filename": document["filename"]})
         except PdfError as exc:
             return _error(str(exc), 400)
+        except ValueError as exc:
+            return _password_problem(exc)
 
     @app.get("/api/documents/<doc_id>/thumb/<int:page>")
     def thumbnail(doc_id: str, page: int):
@@ -347,12 +353,15 @@ def create_app() -> Flask:
         from app.converter.pdf_source import PdfError, PdfSource
 
         try:
+            data = _unlocked(data)
             with PdfSource(data, ocr_mode="never") as source:
                 if page < 1 or page > source.page_count:
                     return _error("That page does not exist.", 404)
                 image = source.thumbnail(page - 1)
         except PdfError as exc:
             return _error(str(exc), 400)
+        except ValueError as exc:
+            return _password_problem(exc)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         buffer.seek(0)
@@ -397,6 +406,21 @@ def _error(message: str, status: int):
     return jsonify({"error": message}), status
 
 
+def _unlocked(data: bytes) -> bytes:
+    """Open a PDF for thumbnails, asking the browser for its password first."""
+    from app.tools.pdf_ops import unlock_bytes
+
+    return unlock_bytes(data, str(request.args.get("password") or "")[:200])
+
+
+def _password_problem(exc: Exception):
+    """401 with a code the browser uses to show the password box."""
+    code = getattr(exc, "code", "")
+    if code:
+        return jsonify({"error": str(exc), "code": code}), 401
+    return jsonify({"error": str(exc)}), 400
+
+
 def _int(value, default: int) -> int:
     try:
         return int(value)
@@ -432,6 +456,7 @@ def _excel_options(options: dict) -> dict:
         "fills": bool(options.get("fills", True)),
         "pages_by_doc": options.get("pages_by_doc") or {},
         "rotate_by_doc": options.get("rotate_by_doc") or {},
+        "unlock_password": str(options.get("unlock_password") or "")[:200],
         "sheets": {
             "layout": bool(options.get("layout", True)),
             "data": True,
@@ -474,6 +499,11 @@ def _upload_problem(files) -> str | None:
         return f"At most {settings.max_files_per_run} files per run."
     for item in files:
         suffix = Path(item.filename or "").suffix.lower()
+        if suffix in UNDECODABLE_IMAGE_EXTENSIONS:
+            return (
+                f"{item.filename}: this browser could not convert the photo. "
+                "Save it as JPG or PNG and upload that instead."
+            )
         if suffix not in PDF_EXTENSIONS | IMAGE_EXTENSIONS:
             return f"{item.filename}: upload PDFs or images (PNG, JPG, WebP)."
     return None
