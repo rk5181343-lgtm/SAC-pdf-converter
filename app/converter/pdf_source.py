@@ -199,11 +199,11 @@ class PdfSource:
             raise PdfError(f"Page {index + 1} is outside this document ({self.page_count} pages).")
 
         page = self._plumber.pages[index]
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            text = ""
+        # One layout pass per page, not two: the positioned words already carry
+        # the page's text, and extract_text() is pdfminer's most expensive call.
         words = self._words(page)
+        text = "\n".join(lines_from_words(words)) if words else self._page_text(page)
+
         tables = self._tables(page)
         images = self._image_boxes(page)
 
@@ -239,6 +239,13 @@ class PdfSource:
             return True
         visible = len(text.strip())
         return visible < OCR_CHAR_THRESHOLD and len(words) < 6
+
+    def _page_text(self, page) -> str:
+        """Text for pages that carry no positioned words (a font pdfminer cannot box)."""
+        try:
+            return page.extract_text() or ""
+        except Exception:
+            return ""
 
     def _words(self, page) -> list[Word]:
         try:

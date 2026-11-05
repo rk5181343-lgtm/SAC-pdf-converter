@@ -18,6 +18,10 @@ from app.converter.pdf_source import PageData, PdfSource
 
 DOC_TYPES = ("bank_statement", "invoice", "ledger", "trial_balance", "generic")
 
+# Points: a space between two words is about 2.5, a gutter between columns far more.
+MIN_GUTTER = 4.0
+DESCRIPTION_COLUMN = "Description"
+
 DOC_LABELS = {
     "bank_statement": "Bank statement",
     "invoice": "Invoice",
@@ -319,12 +323,24 @@ def page_tables(page: PageData) -> list[list[list[str]]]:
 
 
 def cluster_table(page: PageData) -> list[list[str]]:
-    """Rebuild a table from positioned words when the PDF has no ruling lines."""
+    """Rebuild a table from positioned words when the PDF has no ruling lines.
+
+    Column boundaries are taken from the page as a whole rather than from each
+    line: a strip of x positions no line writes into is a gutter between columns,
+    so every line splits at the same places. Splitting line by line used to glue
+    a date to the description whenever they sat closer together than that row's
+    median word gap, which then pushed every value one column to the left.
+    """
     if not page.words:
         return []
-    rows: list[list] = []
-    for line in _group_rows(page.words):
-        rows.append(_split_cells(line))
+    lines = [line for line in _group_rows(page.words) if line]
+    if not lines:
+        return []
+    bands = _column_bands(lines[_table_start(lines):], page.width)
+    if bands:
+        rows = [[_band_text(line, band) for band in bands] for line in lines]
+    else:
+        rows = [_split_cells(line) for line in lines]
     rows = [row for row in rows if any(cell for cell in row)]
     if len(rows) < 2:
         return rows
@@ -360,6 +376,79 @@ def _split_cells(words) -> list[str]:
         else:
             cells[-1].append(word)
     return [" ".join(item.text for item in cell).strip() for cell in cells]
+
+
+def _table_start(lines: list[list]) -> int:
+    """Index of the first line of the table proper, ignoring the heading block.
+
+    The two or three title lines above a table cross every column, so counting
+    them as table lines hides all the gutters. The table starts two lines above
+    its first printed amount, which leaves room for a header that wrapped.
+    """
+    for index, line in enumerate(lines):
+        if any(_looks_like_amount(cell) for cell in _split_cells(line)):
+            return max(0, index - 2)
+    return 0
+
+
+def _column_bands(lines: list[list], page_width: float) -> list[tuple[float, float]]:
+    """The page's own columns: strips of x that no line writes into are gutters.
+
+    A gutter has to be clear in most lines (a long description or a footer is
+    tolerated) and wider than a word space, so text inside one cell is never torn
+    apart while a real column boundary is found even when it is narrow.
+    """
+    if len(lines) < 2:
+        return []
+    right = max(word.x1 for line in lines for word in line)
+    width = int(max(page_width, right)) + 2
+    if width < 16 or width > 20000:
+        return []
+
+    coverage = [0] * (width + 1)
+    for line in lines:
+        touched: set[int] = set()
+        for word in line:
+            start = max(0, int(word.x0))
+            end = min(width, int(word.x1) + 1)
+            for x in range(start, end):
+                touched.add(x)
+        for x in touched:
+            coverage[x] += 1
+
+    occupied = max(0, int(len(lines) * 0.25))
+    gutters: list[tuple[int, int]] = []
+    start: int | None = None
+    for x in range(width + 1):
+        if coverage[x] <= occupied:
+            if start is None:
+                start = x
+        elif start is not None:
+            if x - start >= MIN_GUTTER:
+                gutters.append((start, x))
+            start = None
+    if start is not None and width - start >= MIN_GUTTER:
+        gutters.append((start, width))
+    if not gutters:
+        return []
+
+    bands: list[tuple[float, float]] = []
+    edge = 0.0
+    for gutter_start, gutter_end in gutters:
+        if gutter_start > edge:
+            bands.append((edge, float(gutter_start)))
+        edge = float(gutter_end)
+    if edge < width:
+        bands.append((edge, float(width)))
+    return bands if len(bands) >= 2 else []
+
+
+def _band_text(line: list, band: tuple[float, float]) -> str:
+    """The words of one line that sit inside one column band."""
+    low, high = band
+    return " ".join(
+        word.text for word in line if low <= (word.x0 + word.x1) / 2 < high
+    ).strip()
 
 
 # -------------------------------------------------------------------- columns
@@ -419,14 +508,30 @@ def _dedupe_columns(raw_columns: list[str]) -> list[str]:
     return columns
 
 
+AMOUNT_TEXT = re.compile(r"^[\(\-\+]?[$€£¥₹]?\s?\d[\d,. ]*\)?-?$")
+
+
+def _looks_like_amount(value: str) -> bool:
+    """Is this cell a printed amount? ``account 12345678`` is not one.
+
+    ``parse_number`` strips letters, which is right for reading a value but wrong
+    here: it turned a title line into "a row of numbers", so the title was taken
+    as the table header and became the sheet's column names.
+    """
+    text = clean_text(value)
+    return bool(text) and AMOUNT_TEXT.match(text) is not None and parse_number(text) is not None
+
+
 def _header_row(rows: list[list[str]]) -> int | None:
     for index, row in enumerate(rows[:6]):
         filled = [cell for cell in row if clean_text(cell)]
         if len(filled) < 2:
             continue
-        text_cells = sum(1 for cell in filled if parse_number(cell) is None and not parse_date(cell))
+        text_cells = sum(
+            1 for cell in filled if not _looks_like_amount(cell) and not parse_date(cell)
+        )
         following = rows[index + 1] if index + 1 < len(rows) else []
-        has_numbers = any(parse_number(cell) is not None for cell in following)
+        has_numbers = any(_looks_like_amount(cell) for cell in following)
         if text_cells >= max(2, int(len(filled) * 0.6)) and (has_numbers or index == len(rows) - 1):
             return index
     return 0 if rows else None
@@ -467,7 +572,36 @@ def _records_from_table(table: list[list[str]]) -> tuple[list[str], list[dict], 
             continue  # repeated header
         records.append(dict(zip(columns, cells)))
         flags.append(_is_total_row(cells))
+    columns, records, flags = _merge_continuations(columns, records, flags)
     return columns, records, flags
+
+
+def _merge_continuations(
+    columns: list[str], records: list[dict], flags: list[bool]
+) -> tuple[list[str], list[dict], list[bool]]:
+    """Join a wrapped description to the row above it.
+
+    A long narrative that wraps onto a second printed line arrives as a row with
+    words but no date and no amounts. Left alone it became its own record with
+    every value blank, which reads as a broken row in the sheet; here the words
+    are appended to the description of the record they belong to.
+    """
+    if len(records) < 2 or DESCRIPTION_COLUMN not in columns:
+        return columns, records, flags
+    others = [column for column in columns if column != DESCRIPTION_COLUMN]
+    kept: list[dict] = []
+    kept_flags: list[bool] = []
+    for record, flag in zip(records, flags):
+        text = clean_text(record.get(DESCRIPTION_COLUMN, ""))
+        empty_elsewhere = not any(clean_text(record.get(column, "")) for column in others)
+        if kept and text and empty_elsewhere and not flag:
+            previous = kept[-1]
+            joined = f"{clean_text(previous.get(DESCRIPTION_COLUMN, ''))} {text}".strip()
+            previous[DESCRIPTION_COLUMN] = joined
+            continue
+        kept.append(dict(record))
+        kept_flags.append(flag)
+    return columns, kept, kept_flags
 
 
 LINE_DATE = re.compile(
