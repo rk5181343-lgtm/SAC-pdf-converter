@@ -24,6 +24,8 @@ const state = {
   openBatches: new Set(),
   timer: null,
   running: false,
+  unlockPassword: "",
+  passwordRetry: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -47,7 +49,10 @@ async function api(path, options = {}) {
     payload = {};
   }
   if (!response.ok) {
-    throw new Error(payload.error || fallbackMessage(response.status));
+    const failure = new Error(payload.error || fallbackMessage(response.status));
+    failure.status = response.status;
+    failure.code = payload.code || "";
+    throw failure;
   }
   return payload;
 }
@@ -101,7 +106,13 @@ function toolLabel(id) {
 }
 
 function isImage(name) {
-  return /\.(png|jpe?g|webp|bmp|tiff?)$/i.test(name || "");
+  return /\.(png|jpe?g|jfif|gif|webp|bmp|tiff?)$/i.test(name || "");
+}
+
+/* Phones name their pictures whatever they like (and send HEIC), so the file
+   type decides as much as the extension. */
+function acceptsImage(file) {
+  return isImage(file.name) || (file.type || "").startsWith("image/");
 }
 
 function compressRanges(pages) {
@@ -245,6 +256,12 @@ function bindShell() {
   }
 
   $("lookup-form").addEventListener("submit", runLookup);
+  $("password-form").addEventListener("submit", usePassword);
+  $("password-cancel").addEventListener("click", () => {
+    state.unlockPassword = "";
+    closePassword();
+    setStatus("Password cleared.");
+  });
 }
 
 function switchView(view) {
@@ -302,6 +319,9 @@ function selectTool(id) {
   state.pageOrder = [];
   state.preview = null;
   state.totalPages = 0;
+  state.unlockPassword = "";
+  state.passwordRetry = null;
+  $("password-panel").hidden = true;
 
   $("tool-group").textContent = tool.group;
   $("tool-title").textContent = tool.label;
@@ -355,9 +375,17 @@ async function handleFiles(fileList) {
   if (!files.length || !state.tool) return;
   const tool = state.tool;
 
-  const accepted = tool.accepts === "images" ? files.filter((file) => isImage(file.name)) : files.filter((file) => /\.pdf$/i.test(file.name));
+  const accepted = tool.accepts === "images" ? files.filter(acceptsImage) : files.filter((file) => /\.pdf$/i.test(file.name));
   if (accepted.length !== files.length) {
-    setStatus(`Some files were skipped: ${tool.label} needs ${tool.accepts === "images" ? "images" : "PDFs"}.`, "error");
+    const skipped = files
+      .filter((file) => !accepted.includes(file))
+      .map((file) => file.name)
+      .slice(0, 3)
+      .join(", ");
+    setStatus(
+      `Skipped ${skipped || "some files"}: ${tool.label} needs ${tool.accepts === "images" ? "images" : "PDFs"}.`,
+      "error"
+    );
   }
   if (!accepted.length) return;
   if (!tool.multiple && accepted.length > 1) {
@@ -366,7 +394,12 @@ async function handleFiles(fileList) {
   }
 
   const limitMb = state.health && state.health.limits ? state.health.limits.upload_mb : 40;
-  const totalMb = accepted.reduce((sum, file) => sum + file.size, 0) / (1024 * 1024);
+  let ready = accepted;
+  if (tool.accepts === "images") {
+    setStatus("Preparing pictures…");
+    ready = await prepareImages(accepted, limitMb * 1024 * 1024 * 0.7);
+  }
+  const totalMb = ready.reduce((sum, file) => sum + file.size, 0) / (1024 * 1024);
   if (totalMb > limitMb) {
     setStatus(
       `Those files total ${totalMb.toFixed(1)} MB and this deployment accepts ${limitMb} MB per upload. Send them in smaller groups.`,
@@ -378,7 +411,7 @@ async function handleFiles(fileList) {
   discardDraft();
   setStatus("Uploading…");
   const form = new FormData();
-  accepted.forEach((file) => form.append("files", file));
+  ready.forEach((file) => form.append("files", file));
   try {
     const payload = await uploadWithRetry(form);
     state.batch = payload.batch;
@@ -529,6 +562,10 @@ async function loadPageGrid(docId) {
     syncPageField();
   } catch (error) {
     $("pagegrid").hidden = true;
+    if (error.code === "password_required") {
+      askPassword(error.message, () => loadPageGrid(docId));
+      return;
+    }
     setStatus(error.message, "error");
   }
 }
@@ -550,7 +587,7 @@ function renderPageGrid() {
   for (let page = 1; page <= state.totalPages; page += 1) {
     const turned = pageAngle(page);
     const thumb = el("img", {
-      src: `/api/documents/${state.preview}/thumb/${page}`,
+      src: `/api/documents/${state.preview}/thumb/${page}${passwordQuery()}`,
       alt: `Page ${page}`,
       loading: "lazy",
     });
@@ -793,7 +830,124 @@ function collectOptions() {
     if (pages && Object.keys(pages).length) turns[docId] = { ...pages };
   }
   if (Object.keys(turns).length) options.rotate_by_doc = turns;
+  if (state.unlockPassword) options.unlock_password = state.unlockPassword;
   return options;
+}
+
+/* ----------------------------------------------------------------- pictures */
+const IMAGE_SAFE_EXTENSION = /\.(png|jpe?g|jfif|webp|bmp|tiff?)$/i;
+const IMAGE_MAX_SIDE = 2600;
+
+/* A phone photo is 4–12 MB and often HEIC, which this server cannot decode. The
+   browser decodes it, fits it to a sensible resolution and hands back a JPEG
+   inside the upload limit — so “Images → PDF” works with camera pictures. */
+async function decodeImage(file) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      return await createImageBitmap(file);
+    } catch (_error) {
+      /* fall back to an <img> below */
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`could not read ${file.name}`));
+    };
+    image.src = url;
+  });
+}
+
+async function shrinkImage(file, budget) {
+  const bitmap = await decodeImage(file);
+  const sourceWidth = bitmap.width || bitmap.naturalWidth || 0;
+  const sourceHeight = bitmap.height || bitmap.naturalHeight || 0;
+  if (!sourceWidth || !sourceHeight) throw new Error(`could not read ${file.name}`);
+  const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(sourceWidth, sourceHeight));
+  let width = Math.max(1, Math.round(sourceWidth * scale));
+  let height = Math.max(1, Math.round(sourceHeight * scale));
+  let quality = 0.9;
+  let blob = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(bitmap, 0, 0, width, height);
+    blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+    if (blob && blob.size <= budget) break;
+    quality = Math.max(0.55, quality - 0.12);
+    if (attempt >= 1) {
+      width = Math.max(1, Math.round(width * 0.85));
+      height = Math.max(1, Math.round(height * 0.85));
+    }
+  }
+  if (typeof bitmap.close === "function") bitmap.close();
+  if (!blob) throw new Error(`could not prepare ${file.name}`);
+  const stem = file.name.replace(/\.[^.]+$/, "") || "picture";
+  return new File([blob], `${stem}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+}
+
+async function prepareImages(files, budget) {
+  const needsWork = (file) => file.size > budget / 2 || !IMAGE_SAFE_EXTENSION.test(file.name);
+  if (!files.some(needsWork)) return files;
+  const prepared = [];
+  let converted = 0;
+  for (const file of files) {
+    if (!needsWork(file)) {
+      prepared.push(file);
+      continue;
+    }
+    try {
+      prepared.push(await shrinkImage(file, budget));
+      converted += 1;
+    } catch (_error) {
+      prepared.push(file); // the server reports the precise reason
+    }
+  }
+  if (converted) setStatus(`Prepared ${converted} picture(s) for upload.`);
+  return prepared;
+}
+
+/* ---------------------------------------------------------------- passwords */
+function passwordQuery() {
+  return state.unlockPassword ? `?password=${encodeURIComponent(state.unlockPassword)}` : "";
+}
+
+function askPassword(message, retry) {
+  state.passwordRetry = typeof retry === "function" ? retry : null;
+  $("password-note").textContent = message || "Enter the PDF password to continue.";
+  $("password-panel").hidden = false;
+  $("password-input").value = "";
+  $("password-input").focus();
+}
+
+function closePassword() {
+  state.passwordRetry = null;
+  $("password-panel").hidden = true;
+}
+
+async function usePassword(event) {
+  event.preventDefault();
+  const value = $("password-input").value.trim();
+  if (!value) {
+    $("password-input").focus();
+    return;
+  }
+  state.unlockPassword = value;
+  const retry = state.passwordRetry;
+  closePassword();
+  setStatus("Password set for this run.");
+  if (retry) await retry();
+  else startRun();
 }
 
 /* --------------------------------------------------------------------- run */
@@ -860,7 +1014,12 @@ async function finishJob(job) {
   } catch (error) {
     setStatus(error.message, "error");
   }
-  setStatus(job.status === "done" ? "Done." : "Finished with problems.", job.status === "done" ? "ok" : "error");
+  if (job.password_required) {
+    setStatus("That PDF is locked — enter its password.", "error");
+    askPassword(job.password_message || "This PDF is password protected.", () => startRun());
+  } else {
+    setStatus(job.status === "done" ? "Done." : "Finished with problems.", job.status === "done" ? "ok" : "error");
+  }
   refreshLibrary();
 }
 
