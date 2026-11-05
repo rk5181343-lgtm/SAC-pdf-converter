@@ -33,6 +33,28 @@ PAGE_SIZES = {
 IMAGE_MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
 
 
+class PdfPasswordRequired(ValueError):
+    """A locked PDF needs its password before any tool can read it.
+
+    The ``code`` travels with the error so a job can tell the browser to ask for
+    the password instead of leaving the user at a dead end.
+    """
+
+    code = "password_required"
+
+    def __init__(self, filename: str = "This PDF", wrong: bool = False) -> None:
+        self.filename = filename or "This PDF"
+        self.wrong = wrong
+        if wrong:
+            message = (
+                f"{self.filename}: that password did not open the file. "
+                "Check it, or try the owner password."
+            )
+        else:
+            message = f"{self.filename} is password protected. Enter its password to continue."
+        super().__init__(message)
+
+
 # --------------------------------------------------------------------- helpers
 def _num(options: dict, name: str, default: float) -> float:
     try:
@@ -108,6 +130,17 @@ def _page_size(name: str, orientation: str = "portrait") -> tuple[float, float]:
     if str(orientation).lower().startswith("land"):
         return (height, width)
     return (width, height)
+
+
+def _flatten(image: Image.Image) -> Image.Image:
+    """EXIF-orient the picture and put any transparency on white paper."""
+    oriented = ImageOps.exif_transpose(image)
+    if oriented.mode in {"RGBA", "LA", "P"}:
+        rgba = oriented.convert("RGBA")
+        background = Image.new("RGB", rgba.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.split()[-1])
+        return background
+    return oriented.convert("RGB")
 
 
 def _fit(image: Image.Image, box_width: float, box_height: float) -> tuple[float, float]:
@@ -226,7 +259,7 @@ def images_to_pdf(files: list[dict], options: dict) -> list[dict]:
             image = Image.open(io.BytesIO(file["data"]))
         except Exception as exc:
             raise ValueError(f"{file.get('filename')}: not an image ({exc}).") from exc
-        images.append(ImageOps.exif_transpose(image).convert("RGB"))
+        images.append(_flatten(image))
     if not images:
         raise ValueError("Choose at least one image.")
 
@@ -800,26 +833,36 @@ def _watermark_overlay(width: float, height: float, text: str, opacity: float, t
 
 
 # --------------------------------------------------------------------- protect
+def unlock_bytes(data: bytes, password: str = "", filename: str = "This PDF") -> bytes:
+    """Return PDF bytes any tool can read.
+
+    An unencrypted file comes back untouched. A locked file is opened with
+    ``password`` and rewritten without encryption, so nothing downstream has to
+    know it was ever protected. A missing or wrong password raises
+    :class:`PdfPasswordRequired`, which carries the code the UI prompts on.
+    """
+    reader = PdfReader(io.BytesIO(data))
+    if not reader.is_encrypted:
+        return data
+    try:
+        opened = reader.decrypt(password or "")
+    except Exception as exc:  # malformed key, unsupported handler
+        raise PdfPasswordRequired(filename, wrong=bool(password)) from exc
+    if not opened:
+        raise PdfPasswordRequired(filename, wrong=bool(password))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    return _write_bytes(writer)
+
+
 def unlock_pdf(files: list[dict], options: dict) -> list[dict]:
     password = _text(options, "password", "")
     outputs = []
     for file in _pdfs(files):
-        reader = PdfReader(io.BytesIO(file["data"]))
-        if reader.is_encrypted:
-            try:
-                unlocked = reader.decrypt(password or "")
-            except Exception as exc:
-                raise ValueError(f"{file['filename']}: {exc}") from exc
-            if not unlocked:
-                raise ValueError(
-                    f"{file['filename']}: the password is wrong or missing. "
-                    "Try the owner password, or leave the field blank for print/copy restrictions only."
-                )
-        writer = PdfWriter()
-        for page in reader.pages:
-            writer.add_page(page)
-        outputs.append(_out(f"{_stem(file['filename'])}-unlocked.pdf", _write_bytes(writer),
-                            meta={"pages": len(reader.pages)}))
+        data = unlock_bytes(file["data"], password, file["filename"])
+        pages = len(PdfReader(io.BytesIO(data)).pages)
+        outputs.append(_out(f"{_stem(file['filename'])}-unlocked.pdf", data, meta={"pages": pages}))
     return outputs
 
 
