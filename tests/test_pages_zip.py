@@ -75,6 +75,31 @@ def test_pages_by_doc_trims_before_running(client, three_page_pdf):
     assert len(archive.namelist()) == 2  # pages 2 and 3 were converted
 
 
+def test_pages_by_doc_also_trims_a_pdf_to_excel_run(client, two_page_statement_pdf):
+    """The pages drill-down is not the privilege of the PDF toolbox tools."""
+    from openpyxl import load_workbook
+
+    batch = _upload(client, two_page_statement_pdf, "two pages.pdf")
+    doc_id = batch["documents"][0]["id"]
+
+    started = client.post(
+        f"/api/batches/{batch['id']}/run",
+        json={"tool": "pdf-to-excel", "options": {"pages_by_doc": {doc_id: "2"}}},
+    )
+    assert started.status_code == 202
+    finished = _finish(client, started.get_json()["job"]["id"])
+    assert finished["status"] == "done", finished
+
+    # Balances are only highlighted from printed wording, so no fills are awaited
+    # here: what matters is that page 1 was dropped before conversion.
+    outputs = _outputs(client, batch["id"])
+    workbook = load_workbook(io.BytesIO(client.get(outputs[0]["download_url"]).data))
+    rows = list(workbook["Clean Data"].iter_rows(min_row=2, values_only=True))
+    descriptions = [str(row[1]) for row in rows if row[1]]
+    assert descriptions, rows
+    assert all("p2" in text for text in descriptions), descriptions
+
+
 def test_pages_by_doc_is_ignored_when_absent(client, three_page_pdf):
     batch = _upload(client, three_page_pdf, "all pages.pdf")
     started = client.post(

@@ -136,6 +136,14 @@ main { padding: 24px 28px 64px; }
 .toolrail .tool:hover { background: #e9eef3; color: var(--ink); }
 .toolrail .tool.is-active { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); }
 
+.toolrail[hidden] { display: none; }
+.toolrail.is-choosing { animation: rail-in 0.18s ease; }
+.toolrail .chooser-hint { color: var(--accent); margin-bottom: 4px; }
+@keyframes rail-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
 .workspace { flex: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0; max-width: 940px; }
 .workspace.wide { max-width: 1040px; margin: 0 auto; width: 100%; }
 
@@ -150,7 +158,8 @@ main { padding: 24px 28px 64px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .panel-head h2 { margin: 0; }
 
-.toolhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.toolhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.toolhead-side { display: flex; align-items: center; gap: 8px; }
 .badge {
   background: var(--teal-soft);
   color: var(--teal);
@@ -214,8 +223,25 @@ main { padding: 24px 28px 64px; }
 .file-meta { font-size: 0.78rem; color: var(--ink-faint); }
 .file button { flex: 0 0 auto; }
 
+/* -------------------------------------------------- pages & rotation drill-down */
+.drilldown { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.drilldown-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink-soft);
+}
+.drilldown-head::-webkit-details-marker { display: none; }
+.drilldown-head strong { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; }
+.drilldown-head .muted { font-size: 0.78rem; }
+.drilldown-caret { display: inline-block; font-size: 0.7rem; transition: transform 0.12s ease; }
+.drilldown[open] .drilldown-caret { transform: rotate(90deg); }
+.drilldown[open] .drilldown-head { margin-bottom: 10px; }
+.drilldown-head:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 3px; }
+
 /* --------------------------------------------------------------- page grid */
-.pagegrid { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
 .pagegrid-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .pagegrid-head strong { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft); }
 .pagegrid-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }

@@ -35,11 +35,14 @@
     <div class="workspace" id="workspace">
       <div class="panel toolhead">
         <div>
-          <p class="eyebrow" id="tool-group">Convert</p>
-          <h2 id="tool-title">PDF → Excel</h2>
-          <p class="muted" id="tool-summary">Workbooks with Original Layout, Clean Data and Validation sheets.</p>
+          <p class="eyebrow" id="tool-group">Step 1</p>
+          <h2 id="tool-title">Drop a file to begin</h2>
+          <p class="muted" id="tool-summary">PDFs and pictures both work. The toolbox appears as soon as a file is in.</p>
         </div>
-        <span class="badge" id="tool-badge">PDF</span>
+        <div class="toolhead-side">
+          <button class="chip" id="change-tool" type="button" hidden>↺ Choose another tool</button>
+          <span class="badge" id="tool-badge" hidden>PDF</span>
+        </div>
       </div>
 
       <div class="panel dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose files">
@@ -55,18 +58,27 @@
           <button class="link danger" id="clear-files" type="button">Remove all</button>
         </div>
         <div class="file-list" id="file-list"></div>
-        <div class="pagegrid" id="pagegrid" hidden>
-          <div class="pagegrid-head">
-            <strong id="pagegrid-title">Pages</strong>
-            <span class="muted" id="page-selection">Nothing selected — the whole file is used</span>
-            <div class="pagegrid-actions">
-              <button class="chip" data-pages="all" type="button">Select all</button>
-              <button class="chip" data-pages="invert" type="button">Invert</button>
-              <button class="chip" data-pages="clear" type="button">Clear</button>
+        <!-- Optional drill-down: it opens once a PDF is uploaded and nothing
+             inside it is required — left alone, the whole file is used upright. -->
+        <details class="drilldown" id="pagedrill" hidden>
+          <summary class="drilldown-head">
+            <span class="drilldown-caret" aria-hidden="true">▸</span>
+            <strong>Pages &amp; rotation</strong>
+            <span class="muted" id="pagegrid-summary">Optional — the whole file is used</span>
+          </summary>
+          <div class="pagegrid" id="pagegrid">
+            <div class="pagegrid-head">
+              <strong id="pagegrid-title">Pages</strong>
+              <span class="muted" id="page-selection">Nothing selected — the whole file is used</span>
+              <div class="pagegrid-actions">
+                <button class="chip" data-pages="all" type="button">Select all</button>
+                <button class="chip" data-pages="invert" type="button">Invert</button>
+                <button class="chip" data-pages="clear" type="button">Clear</button>
+              </div>
             </div>
+            <div class="pagegrid-body" id="pagegrid-body"></div>
           </div>
-          <div class="pagegrid-body" id="pagegrid-body"></div>
-        </div>
+        </details>
       </div>
 
       <div class="panel" id="options-panel" hidden>
