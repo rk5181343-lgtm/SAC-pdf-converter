@@ -104,8 +104,8 @@ def test_clean_data_ends_with_the_source_page(two_page_statement_pdf):
     assert sheet.max_row - 1 == 8, "both pages' rows are in the one sheet"
 
 
-def test_opening_and_closing_balances_are_highlighted(statement_pdf):
-    output = convert_pdf("statement.pdf", statement_pdf, {"images": False})
+def test_opening_and_closing_balances_are_highlighted(balanced_statement_pdf):
+    output = convert_pdf("statement.pdf", balanced_statement_pdf, {"images": False})
     sheet = _workbook(output["data"])["Clean Data"]
     headers = [cell.value for cell in sheet[1]]
     balance = headers.index("Balance") + 1
@@ -113,8 +113,21 @@ def test_opening_and_closing_balances_are_highlighted(statement_pdf):
         str(sheet.cell(row=row, column=balance).fill.fgColor.rgb or "")
         for row in range(2, sheet.max_row + 1)
     ]
-    assert any(fill.endswith("FFF1D6") for fill in fills), "opening balance row is tinted"
-    assert any(fill.endswith("DDF0E8") for fill in fills), "closing balance row is tinted"
+    assert sum(fill.endswith("FFF1D6") for fill in fills) == 1, "only the opening balance is tinted"
+    assert sum(fill.endswith("DDF0E8") for fill in fills) == 1, "only the closing balance is tinted"
+
+
+def test_rows_without_balance_wording_are_not_highlighted(unlabelled_statement_pdf):
+    """No opening/closing balance line on the page means no tinted rows at all."""
+    output = convert_pdf("statement.pdf", unlabelled_statement_pdf, {"images": False})
+    sheet = _workbook(output["data"])["Clean Data"]
+    headers = [cell.value for cell in sheet[1]]
+    balance = headers.index("Balance") + 1
+    fills = [
+        str(sheet.cell(row=row, column=balance).fill.fgColor.rgb or "")
+        for row in range(2, sheet.max_row + 1)
+    ]
+    assert not any(fill.endswith("FFF1D6") or fill.endswith("DDF0E8") for fill in fills)
 
 
 def test_validation_no_longer_reports_the_balance(statement_pdf):

@@ -78,9 +78,46 @@ def build_statement_pdf(pages: int = 1) -> bytes:
     return buffer.getvalue()
 
 
+# Statements that spell out their balances, and ones that never do.
+BALANCED_ROWS = [
+    ("Date", "Description", "Amount", "Balance"),
+    ("01/02/2026", "Opening balance", "", "1,000.00"),
+    ("03/02/2026", "Invoice 1042", "250.00", "1,250.00"),
+    ("10/02/2026", "Invoice 1043", "-100.00", "1,150.00"),
+    ("28/02/2026", "Closing balance", "", "1,150.00"),
+]
+UNLABELLED_ROWS = [
+    ("Date", "Description", "Amount", "Balance"),
+    ("01/02/2026", "Salary credit", "1,000.00", "1,000.00"),
+    ("03/02/2026", "Invoice 1042", "250.00", "1,250.00"),
+    ("10/02/2026", "Invoice 1043", "-100.00", "1,150.00"),
+    ("28/02/2026", "Bank charges", "-15.50", "1,134.50"),
+]
+
+
+def build_rows_pdf(rows: list[tuple[str, ...]]) -> bytes:
+    """One page holding exactly these rows."""
+    buffer = io.BytesIO()
+    doc = canvas.Canvas(buffer, pagesize=A4)
+    _width, height = A4
+    _draw_page(doc, list(rows), height)
+    doc.save()
+    return buffer.getvalue()
+
+
 @pytest.fixture(scope="session")
 def statement_pdf() -> bytes:
     return build_statement_pdf()
+
+
+@pytest.fixture(scope="session")
+def balanced_statement_pdf() -> bytes:
+    return build_rows_pdf(BALANCED_ROWS)
+
+
+@pytest.fixture(scope="session")
+def unlabelled_statement_pdf() -> bytes:
+    return build_rows_pdf(UNLABELLED_ROWS)
 
 
 @pytest.fixture(scope="session")
