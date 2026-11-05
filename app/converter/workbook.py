@@ -383,9 +383,10 @@ def _summary_sheet(ws, analyses: list[dict]) -> None:
 def _balance_marks(result: ExtractResult) -> dict[int, str]:
     """Which record is the opening balance and which is the closing balance.
 
-    A statement usually prints both lines, and they are found by their wording.
-    When it does not, the first and last row carrying a balance are used, so the
-    highlight still lands on something an accountant recognises.
+    Only rows that actually say so are marked. A statement that never prints
+    "opening balance", "brought forward", "closing balance" or "carried
+    forward" gets no tint at all: guessing from position would paint an ordinary
+    transaction, which reads as a reconciliation claim that is not there.
     """
     if not result.records:
         return {}
@@ -398,23 +399,11 @@ def _balance_marks(result: ExtractResult) -> dict[int, str]:
         if CLOSING_PATTERN.search(text):
             closing = index
 
-    balance_column = _role_column(result, "balance")
-    readable = []
-    if balance_column:
-        readable = [
-            index
-            for index, record in enumerate(result.records)
-            if parse_number(record.get(balance_column)) is not None
-        ]
-    if opening is None:
-        opening = readable[0] if readable else 0
-    if closing is None:
-        closing = readable[-1] if readable else len(result.records) - 1
-
     marks: dict[int, str] = {}
-    if opening != closing:
+    if opening is not None:
         marks[opening] = "opening"
-    marks[closing] = "closing"
+    if closing is not None and closing != opening:
+        marks[closing] = "closing"
     return marks
 
 
