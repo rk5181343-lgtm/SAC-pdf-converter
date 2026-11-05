@@ -13,7 +13,9 @@ const state = {
   files: [],
   pages: new Set(),
   pagesByDoc: {},
+  orderByDoc: {},
   rotations: {},
+  dragFrom: null,
   gridDoc: null,
   pageOrder: [],
   preview: null,
@@ -137,6 +139,26 @@ function compressRanges(pages) {
 function filePagesSpec(docId) {
   const set = state.pagesByDoc[docId];
   return set && set.size ? compressRanges(set) : "";
+}
+
+/* The order the thumbnails are shown in, which is the order the pages come out
+   in. It starts as 1..N and only exists once a page has been moved. */
+function pageOrderFor(docId, total) {
+  const saved = docId ? state.orderByDoc[docId] : null;
+  if (Array.isArray(saved) && saved.length === total) return saved;
+  return Array.from({ length: total }, (_value, index) => index + 1);
+}
+
+function movePage(docId, total, from, to) {
+  if (!docId || !total || from === null || from === undefined) return false;
+  const order = [...pageOrderFor(docId, total)];
+  if (from < 0 || from >= order.length) return false;
+  const [page] = order.splice(from, 1);
+  order.splice(Math.max(0, Math.min(to, order.length)), 0, page);
+  const identity = order.every((value, index) => value === index + 1);
+  if (identity) delete state.orderByDoc[docId];
+  else state.orderByDoc[docId] = order;
+  return true;
 }
 
 /* Options are remembered per tool, so a repeated run does not start over. */
@@ -547,6 +569,7 @@ async function handleFiles(fileList) {
     state.files = payload.batch.documents || [];
     state.pages = new Set();
     state.pagesByDoc = {};
+    state.orderByDoc = {};
     state.rotations = {};
     state.gridDoc = null;
     state.pageOrder = [];
@@ -625,6 +648,7 @@ async function removeFile(id) {
   }
   state.files = state.files.filter((file) => file.id !== id);
   delete state.pagesByDoc[id];
+  delete state.orderByDoc[id];
   delete state.rotations[id];
   if (state.gridDoc === id) {
     state.gridDoc = null;
@@ -650,6 +674,7 @@ async function resetUpload() {
   state.batch = null;
   state.pages = new Set();
   state.pagesByDoc = {};
+  state.orderByDoc = {};
   state.rotations = {};
   state.gridDoc = null;
   state.pageOrder = [];
@@ -726,7 +751,11 @@ function renderPageGrid() {
   const body = $("pagegrid-body");
   body.innerHTML = "";
   const angle = Number((state.options && state.options.angle) || 0);
-  for (let page = 1; page <= state.totalPages; page += 1) {
+  const order = pageOrderFor(state.gridDoc, state.totalPages);
+  // Dragging is how every tool without its own page field replaces that field;
+  // Reorder pages has the same order, and the other page tools must keep theirs.
+  const canDrag = !state.tool || !state.tool.page_ranges || state.tool.id === "reorder-pages";
+  order.forEach((page, position) => {
     const turned = pageAngle(page);
     const thumb = el("img", {
       src: `/api/documents/${state.preview}/thumb/${page}${passwordQuery()}`,
@@ -764,9 +793,60 @@ function renderPageGrid() {
         },
       }),
     ]);
-    body.appendChild(el("div", { class: `page-cell${turned ? " is-rotated" : ""}` }, [button, controls]));
-  }
+    const cell = el("div", { class: `page-cell${turned ? " is-rotated" : ""}` }, [button, controls]);
+    if (canDrag) enablePageDrag(cell, position);
+    body.appendChild(cell);
+  });
   paintSelection();
+}
+
+/* Hold a page and drop it where it belongs: the grid order is the output order, so
+   a statement can be reassembled before it is converted. */
+function enablePageDrag(cell, position) {
+  cell.draggable = true;
+  cell.classList.add("is-draggable");
+  cell.addEventListener("dragstart", (event) => {
+    state.dragFrom = position;
+    cell.classList.add("is-dragging");
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", String(position));
+    }
+  });
+  cell.addEventListener("dragend", () => {
+    state.dragFrom = null;
+    cell.classList.remove("is-dragging");
+    document.querySelectorAll(".page-cell.is-drop").forEach((node) => node.classList.remove("is-drop"));
+  });
+  cell.addEventListener("dragover", (event) => {
+    if (state.dragFrom === null) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    cell.classList.add("is-drop");
+  });
+  cell.addEventListener("dragleave", () => cell.classList.remove("is-drop"));
+  cell.addEventListener("drop", (event) => {
+    event.preventDefault();
+    cell.classList.remove("is-drop");
+    const from = state.dragFrom;
+    state.dragFrom = null;
+    if (from === null || from === position) return;
+    applyPageMove(from, position);
+  });
+}
+
+function applyPageMove(from, to) {
+  const doc = state.gridDoc;
+  if (!doc || !state.totalPages) return;
+  if (!movePage(doc, state.totalPages, from, to)) return;
+  if (state.tool && state.tool.id === "reorder-pages") {
+    state.pageOrder = pageOrderFor(doc, state.totalPages).filter((page) => state.pageOrder.includes(page));
+    syncPageField();
+  }
+  renderPageGrid();
+  renderFiles();
+  updatePanels();
+  setStatus(`Page moved to position ${to + 1}.`);
 }
 
 /* Per-page rotation: the thumbnail turns immediately, and the angles travel
@@ -854,13 +934,24 @@ function updateDrillSummary() {
   }
   const spec = filePagesSpec(doc);
   const turned = Object.keys(state.rotations[doc] || {}).length;
+  const moved = state.orderByDoc[doc];
   const parts = [spec ? `pages ${spec} of ${state.totalPages}` : `all ${state.totalPages} page(s)`];
+  if (moved) parts.push(`order ${moved.join(",")}`);
   parts.push(turned ? `${turned} turned` : "no rotation");
   node.textContent = `Optional · ${parts.join(" · ")}`;
 }
 
 function pageAction(action) {
   if (!state.totalPages || !state.tool) return;
+  if (action === "order") {
+    if (state.gridDoc) delete state.orderByDoc[state.gridDoc];
+    state.pageOrder = [];
+    renderPageGrid();
+    renderFiles();
+    updatePanels();
+    setStatus("Pages are back in their original order.");
+    return;
+  }
   if (state.tool.id === "reorder-pages") {
     if (action === "all") state.pageOrder = Array.from({ length: state.totalPages }, (_value, index) => index + 1);
     else if (action === "invert") {
@@ -989,8 +1080,17 @@ function collectOptions() {
   // here as well would trim the file twice.
   if (!state.tool.page_ranges) {
     const byDoc = {};
-    for (const [docId, set] of Object.entries(state.pagesByDoc)) {
-      if (set && set.size) byDoc[docId] = compressRanges(set);
+    for (const file of state.files) {
+      if (!/\.pdf$/i.test(file.filename)) continue;
+      const total = Number((file.meta && file.meta.pages) || state.totalPages || 0);
+      if (!total) continue;
+      const order = pageOrderFor(file.id, total);
+      const chosen = state.pagesByDoc[file.id];
+      const pages = chosen && chosen.size ? order.filter((page) => chosen.has(page)) : order;
+      if (!pages.length) continue;
+      const untouched = pages.length === total && pages.every((page, index) => page === index + 1);
+      if (untouched) continue;  // the whole file in its own order needs no trimming
+      byDoc[file.id] = pages.join(",");
     }
     if (Object.keys(byDoc).length) options.pages_by_doc = byDoc;
   }
