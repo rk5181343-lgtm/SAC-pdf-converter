@@ -294,18 +294,6 @@ TOOLS: tuple[dict, ...] = (
         ),
     },
     {
-        "id": "unlock-pdf",
-        "label": "Unlock PDF",
-        "group": "Protect",
-        "summary": "Removes a password you know, or print/copy restrictions.",
-        "accepts": "pdf",
-        "multiple": True,
-        "handler": "unlock_pdf",
-        "options": (
-            {"name": "password", "label": "Password (leave blank if unknown)", "type": "password", "default": ""},
-        ),
-    },
-    {
         "id": "protect-pdf",
         "label": "Protect PDF",
         "group": "Protect",

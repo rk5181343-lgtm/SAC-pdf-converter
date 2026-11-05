@@ -108,6 +108,8 @@ def _public(row: dict) -> dict:
     payload = row.get("payload") or {}
     steps = payload.get("steps") or []
     cursor = int(payload.get("cursor") or 0)
+    errors = payload.get("errors") or []
+    locked = next((item for item in errors if item.get("code") == "password_required"), None)
     return {
         "id": row["id"],
         "batch_id": row["batch_id"],
@@ -119,8 +121,10 @@ def _public(row: dict) -> dict:
         "mode": settings.mode_label,
         "steps_total": len(steps),
         "steps_done": min(cursor, len(steps)),
-        "errors": payload.get("errors") or [],
+        "errors": errors,
         "outputs": payload.get("outputs") or [],
+        "password_required": bool(locked),
+        "password_message": (locked or {}).get("message", ""),
         "updated_at": row.get("updated_at"),
     }
 
@@ -185,7 +189,11 @@ def _run_step(job: dict) -> None:
     try:
         outputs = _process(tool_id, step, options)
     except Exception as exc:
-        payload.setdefault("errors", []).append({"step": cursor + 1, "message": _short_error(exc)})
+        entry = {"step": cursor + 1, "message": _short_error(exc)}
+        code = getattr(exc, "code", "")
+        if code:
+            entry["code"] = code
+        payload.setdefault("errors", []).append(entry)
         payload["cursor"] = cursor + 1
         _save(job["id"], payload, status="running", message="Step failed", error=_short_error(exc),
               progress=_progress(cursor + 1, len(steps)))
@@ -227,6 +235,9 @@ def _process(tool_id: str, document_ids: list[str], options: dict) -> list[dict]
     rotate_by_doc = options.pop("rotate_by_doc", None) or {}
     if not isinstance(rotate_by_doc, dict):
         rotate_by_doc = {}
+    # A password typed in answer to a locked file. Every tool inherits it here,
+    # so a protected statement works without a separate unlock step first.
+    unlock_password = str(options.pop("unlock_password", "") or "")[:200]
 
     files = []
     for doc_id in document_ids:
@@ -234,6 +245,10 @@ def _process(tool_id: str, document_ids: list[str], options: dict) -> list[dict]
         if not document:
             raise FileNotFoundError(f"Document {doc_id} is no longer in the library.")
         is_pdf = bool(data) and data[:5].startswith(b"%PDF")
+        if is_pdf:
+            from app.tools.pdf_ops import unlock_bytes
+
+            data = unlock_bytes(data, unlock_password, document["filename"])
         turns = rotate_by_doc.get(doc_id)
         if is_pdf and isinstance(turns, dict) and turns:
             try:
@@ -353,8 +368,8 @@ def _save(job_id: str, payload: dict, *, status: str, message: str, progress: in
 
 def _update(job_id: str, *, status: str, message: str, progress: int) -> None:
     get_db().execute(
-        "UPDATE jobs SET status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?",
-        (status, max(0, min(int(progress), 100)), message, library.now_iso(), job_id),
+        "UPDATE jobs SET status = ?, progress = ?, message = ?, payload = ?, updated_at = ? WHERE id = ?",
+        (status, max(0, min(int(progress), 100)), message, json.dumps(payload), library.now_iso(), job_id),
     )
 
 
