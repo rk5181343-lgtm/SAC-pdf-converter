@@ -178,10 +178,10 @@ async function boot() {
     state.library = library.batches;
     state.stats = library.stats;
     $("lookup-panel").hidden = !health.exa;
-    renderToolrail();
     renderLibrary();
     renderHealth();
-    selectTool(state.tools[0] ? state.tools[0].id : null);
+    // Nothing is chosen up front: the toolbox appears once a file has been added.
+    resetTool();
   } catch (error) {
     setStatus(error.message, "error");
   }
@@ -230,6 +230,7 @@ function bindShell() {
   });
 
   $("clear-files").addEventListener("click", resetUpload);
+  $("change-tool").addEventListener("click", resetTool);
   $("start-over").addEventListener("click", () => {
     resetUpload();
     hideResults();
@@ -273,22 +274,48 @@ function switchView(view) {
 }
 
 /* ---------------------------------------------------------------- tool rail */
+/* The rail is the toolbox, and it follows the files: out of the way until
+   something is uploaded, listing every tool that can read it, then folded down to
+   just the tool chosen — with "Choose another tool" to open it again. */
+function toolsForFiles() {
+  const hasPdf = state.files.some((file) => /\.pdf$/i.test(file.filename));
+  const hasImage = state.files.some((file) => isImage(file.filename));
+  return state.tools.filter((tool) => (tool.accepts === "images" ? hasImage : hasPdf));
+}
+
+function toolButton(tool) {
+  return el("button", {
+    class: "tool",
+    type: "button",
+    "data-tool": tool.id,
+    text: tool.label,
+    onclick: () => selectTool(tool.id),
+  });
+}
+
 function renderToolrail() {
   const rail = $("toolrail");
   rail.innerHTML = "";
+  rail.classList.remove("is-choosing");
+  if (!state.files.length) {
+    rail.hidden = true;
+    return;
+  }
+  rail.hidden = false;
+  if (state.tool) {
+    rail.appendChild(el("div", { class: "group-label", text: state.tool.group }));
+    rail.appendChild(toolButton(state.tool));
+    markActiveTool();
+    return;
+  }
+  const available = toolsForFiles();
+  rail.classList.add("is-choosing");
+  rail.appendChild(el("p", { class: "group-label chooser-hint", text: "Choose a tool for these files" }));
   for (const group of state.groups) {
+    const tools = available.filter((tool) => tool.group === group);
+    if (!tools.length) continue;
     rail.appendChild(el("div", { class: "group-label", text: group }));
-    for (const tool of state.tools.filter((item) => item.group === group)) {
-      rail.appendChild(
-        el("button", {
-          class: "tool",
-          type: "button",
-          "data-tool": tool.id,
-          text: tool.label,
-          onclick: () => selectTool(tool.id),
-        })
-      );
-    }
+    for (const tool of tools) rail.appendChild(toolButton(tool));
   }
   markActiveTool();
 }
@@ -328,7 +355,7 @@ function actionLabel(tool) {
   return ACTION_LABELS[tool.id] || tool.label;
 }
 
-function selectTool(id) {
+async function selectTool(id) {
   if (!id) return;
   const tool = state.tools.find((item) => item.id === id);
   if (!tool) return;
@@ -336,16 +363,38 @@ function selectTool(id) {
     markActiveTool();
     return;
   }
-  discardDraft();
+  // The chooser only offers tools that match the uploaded types. This guard
+  // covers a mixed upload: what the tool cannot read is left out, not converted.
+  const wantsImages = tool.accepts === "images";
+  const keep = state.files.filter((file) =>
+    wantsImages ? isImage(file.filename) : /\.pdf$/i.test(file.filename)
+  );
+  if (state.files.length && !keep.length) {
+    setStatus(
+      `${tool.label} needs ${wantsImages ? "pictures" : "PDFs"}. Add ${wantsImages ? "an image" : "a PDF"} first.`,
+      "error"
+    );
+    return;
+  }
+  const dropped = state.files.filter((file) => !keep.includes(file));
+  for (const file of dropped) {
+    delete state.pagesByDoc[file.id];
+    delete state.rotations[file.id];
+    api(`/api/documents/${file.id}`, { method: "DELETE" }).catch(() => {});
+  }
+  if (dropped.length) {
+    const names = dropped.map((file) => file.filename).slice(0, 3).join(", ");
+    setStatus(
+      `Left out ${names}: ${tool.label} works on ${wantsImages ? "pictures" : "PDFs"}.`,
+      "error"
+    );
+  }
+  state.files = keep;
   state.tool = tool;
-  state.files = [];
-  state.batch = null;
   state.job = null;
   state.pages = new Set();
-  state.pagesByDoc = {};
-  state.rotations = {};
-  state.gridDoc = null;
   state.pageOrder = [];
+  state.gridDoc = null;
   state.preview = null;
   state.totalPages = 0;
   state.unlockPassword = "";
@@ -355,7 +404,9 @@ function selectTool(id) {
   $("tool-group").textContent = tool.group;
   $("tool-title").textContent = tool.label;
   $("tool-summary").textContent = tool.summary;
+  $("tool-badge").hidden = false;
   $("tool-badge").textContent = tool.accepts === "images" ? "Images" : "PDF";
+  $("change-tool").hidden = false;
   state.dropHint =
     tool.accepts === "images"
       ? `PNG, JPG or WebP up to ${state.health ? state.health.limits.upload_mb : 40} MB each.`
@@ -369,10 +420,46 @@ function selectTool(id) {
 
   renderOptions();
   renderFiles();
+  renderToolrail();
   hideProgress();
   hideResults();
   markActiveTool();
   updatePanels();
+  if (state.files.length) await loadPageGrid();
+}
+
+/* The reset: forget the tool, keep the files, and open the whole toolbox again so
+   a different tool can be tried on the same upload. */
+function resetTool() {
+  state.tool = null;
+  state.pages = new Set();
+  state.pageOrder = [];
+  state.gridDoc = null;
+  state.preview = null;
+  state.totalPages = 0;
+  $("pagedrill").hidden = true;
+  $("pagedrill").open = false;
+  $("pagegrid-body").innerHTML = "";
+  $("tool-group").textContent = state.files.length ? "Step 2" : "Step 1";
+  $("tool-title").textContent = state.files.length ? "Choose what to do with these files" : "Drop a file to begin";
+  $("tool-summary").textContent = state.files.length
+    ? "Pick a tool on the left — only the one you choose stays on screen."
+    : "PDFs and pictures both work. The toolbox appears as soon as a file is in.";
+  $("tool-badge").hidden = true;
+  $("change-tool").hidden = true;
+  const limitMb = state.health && state.health.limits ? state.health.limits.upload_mb : 40;
+  state.dropHint = `PDFs or pictures up to ${limitMb} MB each.`;
+  $("drop-hint").textContent = state.dropHint;
+  $("file-input").accept = ".pdf,image/*";
+  const runButton = $("run");
+  runButton.textContent = "Convert";
+  runButton.disabled = true;
+  hideProgress();
+  renderOptions();
+  renderFiles();
+  renderToolrail();
+  updatePanels();
+  markActiveTool();
 }
 
 function updatePanels() {
@@ -387,46 +474,59 @@ function updatePanels() {
     : state.dropHint || "";
   $("files-panel").hidden = !hasFiles;
   $("options-panel").hidden = !state.tool || !state.tool.options.length;
-  $("runbar").hidden = !hasFiles;
-  $("run").disabled = !hasFiles || state.running;
+  $("runbar").hidden = !hasFiles || !state.tool;
+  $("run").disabled = !hasFiles || !state.tool || state.running;
+  $("change-tool").hidden = !state.tool;
   const picked = Object.values(state.pagesByDoc).filter((set) => set && set.size).length;
-  const rangeNote = state.tool && state.tool.page_ranges && !state.tool.multiple
-    ? " · pages chosen below apply to the run"
+  const turned = Object.values(state.rotations).reduce(
+    (sum, map) => sum + Object.keys(map || {}).length,
+    0
+  );
+  const rangeNote = picked && state.tool && state.tool.page_ranges && !state.tool.multiple
+    ? " · pages chosen apply to the run"
     : "";
-  $("run-meta").textContent = hasFiles
-    ? `${state.files.length} file(s) ready${picked ? ` · pages chosen for ${picked} file(s)` : ""}${rangeNote}`
-    : "";
+  const turnNote = turned ? ` · ${turned} page(s) turned` : "";
+  if (!hasFiles) $("run-meta").textContent = "";
+  else if (!state.tool) $("run-meta").textContent = `${state.files.length} file(s) ready · choose a tool on the left`;
+  else
+    $("run-meta").textContent = `${state.files.length} file(s) ready${picked ? ` · pages chosen for ${picked} file(s)` : ""}${rangeNote}${turnNote}`;
 }
 
 /* ------------------------------------------------------------------ uploads */
 async function handleFiles(fileList) {
   const files = Array.from(fileList || []).filter((file) => file.size > 0);
-  if (!files.length || !state.tool) return;
+  if (!files.length) return;
   const tool = state.tool;
 
-  const accepted = tool.accepts === "images" ? files.filter(acceptsImage) : files.filter((file) => /\.pdf$/i.test(file.name));
-  if (accepted.length !== files.length) {
-    const skipped = files
-      .filter((file) => !accepted.includes(file))
-      .map((file) => file.name)
-      .slice(0, 3)
-      .join(", ");
-    setStatus(
-      `Skipped ${skipped || "some files"}: ${tool.label} needs ${tool.accepts === "images" ? "images" : "PDFs"}.`,
-      "error"
-    );
+  // Before a tool is chosen the upload takes PDFs and pictures together; the rail
+  // then lists only the tools that can read what actually arrived.
+  const accepted = tool
+    ? tool.accepts === "images"
+      ? files.filter(acceptsImage)
+      : files.filter((file) => /\.pdf$/i.test(file.name))
+    : files.filter((file) => /\.pdf$/i.test(file.name) || acceptsImage(file));
+  const skipped = files.filter((file) => !accepted.includes(file)).map((file) => file.name);
+  if (skipped.length) {
+    const needs = tool ? `${tool.label} needs ${tool.accepts === "images" ? "images" : "PDFs"}` : "upload PDFs or pictures (PNG, JPG, WebP)";
+    setStatus(`Skipped ${skipped.slice(0, 3).join(", ") || "some files"}: ${needs}.`, "error");
   }
   if (!accepted.length) return;
-  if (!tool.multiple && accepted.length > 1) {
+  if (tool && !tool.multiple && accepted.length > 1) {
     setStatus(`${tool.label} works on one file at a time.`, "error");
     return;
   }
 
   const limitMb = state.health && state.health.limits ? state.health.limits.upload_mb : 40;
   let ready = accepted;
-  if (tool.accepts === "images") {
-    setStatus("Preparing pictures…");
-    ready = await prepareImages(accepted, limitMb * 1024 * 1024 * 0.7);
+  const pictures = ready.filter(acceptsImage);
+  if (pictures.length) {
+    const budget = limitMb * 1024 * 1024 * 0.7;
+    if (pictures.some((file) => file.size > budget / 2 || !IMAGE_SAFE_EXTENSION.test(file.name))) {
+      setStatus("Preparing pictures…");
+      const prepared = await prepareImages(pictures, budget);
+      let index = 0;
+      ready = ready.map((file) => (acceptsImage(file) ? prepared[index++] : file));
+    }
   }
   const totalMb = ready.reduce((sum, file) => sum + file.size, 0) / (1024 * 1024);
   if (totalMb > limitMb) {
@@ -451,9 +551,15 @@ async function handleFiles(fileList) {
     state.gridDoc = null;
     state.pageOrder = [];
     renderFiles();
+    renderToolrail();
     updatePanels();
-    setStatus("Uploaded. Check the options, then press the button below.", "ok");
-    if (tool.page_ranges) await loadPageGrid();
+    if (tool) {
+      setStatus("Uploaded. Check the options, then press the button below.", "ok");
+      // Every PDF gets the optional pages/rotation drill-down, whatever the tool.
+      await loadPageGrid();
+    } else {
+      setStatus("Uploaded. Choose a tool on the left to continue.", "ok");
+    }
   } catch (error) {
     setStatus(error.message, "error");
   }
@@ -524,7 +630,8 @@ async function removeFile(id) {
     state.gridDoc = null;
     state.totalPages = 0;
     state.pages = new Set();
-    $("pagegrid").hidden = true;
+    $("pagedrill").hidden = true;
+    $("pagedrill").open = false;
     $("pagegrid-body").innerHTML = "";
   }
   if (!state.files.length) {
@@ -532,8 +639,9 @@ async function removeFile(id) {
     return;
   }
   renderFiles();
+  renderToolrail();
   updatePanels();
-  if (state.tool.page_ranges) await loadPageGrid();
+  if (state.tool) await loadPageGrid();
 }
 
 async function resetUpload() {
@@ -547,10 +655,11 @@ async function resetUpload() {
   state.pageOrder = [];
   state.preview = null;
   state.totalPages = 0;
-  $("pagegrid").hidden = true;
+  $("pagedrill").hidden = true;
+  $("pagedrill").open = false;
   $("pagegrid-body").innerHTML = "";
   renderFiles();
-  updatePanels();
+  resetTool();
   if (batch && !state.job) {
     try {
       await api(`/api/batches/${batch.id}`, { method: "DELETE" });
@@ -573,7 +682,7 @@ async function loadPageGrid(docId) {
     ? state.files.find((file) => file.id === docId)
     : state.files.find((file) => /\.pdf$/i.test(file.filename));
   if (!pdf) {
-    $("pagegrid").hidden = true;
+    $("pagedrill").hidden = true;
     return;
   }
   if (!docId && state.gridDoc === pdf.id && state.totalPages) return;
@@ -586,11 +695,14 @@ async function loadPageGrid(docId) {
     state.pages = new Set(state.pagesByDoc[pdf.id] || []);
     $("pagegrid-title").textContent = `Pages · ${pdf.filename}`;
     renderPageGrid();
-    $("pagegrid").hidden = false;
+    $("pagedrill").hidden = false;
+    // The panel is folded by default and left to the user to open, except for
+    // the tools whose whole job is choosing pages.
+    if (state.tool && state.tool.page_ranges) $("pagedrill").open = true;
     paintSelection();
     syncPageField();
   } catch (error) {
-    $("pagegrid").hidden = true;
+    $("pagedrill").hidden = true;
     if (error.code === "password_required") {
       askPassword(error.message, () => loadPageGrid(docId));
       return;
@@ -600,6 +712,7 @@ async function loadPageGrid(docId) {
 }
 
 function openPageGrid(docId) {
+  $("pagedrill").open = true;
   loadPageGrid(docId);
 }
 
@@ -688,6 +801,7 @@ function rotateAll(delta) {
 }
 
 function togglePage(page) {
+  if (!state.tool) return;
   if (state.tool.id === "reorder-pages") {
     const index = state.pageOrder.indexOf(page);
     if (index === -1) state.pageOrder.push(page);
@@ -725,10 +839,28 @@ function paintSelection() {
     : state.gridDoc && state.tool && state.tool.multiple
       ? "Nothing selected — this file is used in full"
       : "Nothing selected — the whole file is used";
+  updateDrillSummary();
+}
+
+/* The folded header has to say what the drill-down currently does, so nobody has
+   to open it to find out whether their pages or turns are still in play. */
+function updateDrillSummary() {
+  const node = $("pagegrid-summary");
+  if (!node) return;
+  const doc = state.gridDoc;
+  if (!doc || !state.totalPages) {
+    node.textContent = "Optional — the whole file is used";
+    return;
+  }
+  const spec = filePagesSpec(doc);
+  const turned = Object.keys(state.rotations[doc] || {}).length;
+  const parts = [spec ? `pages ${spec} of ${state.totalPages}` : `all ${state.totalPages} page(s)`];
+  parts.push(turned ? `${turned} turned` : "no rotation");
+  node.textContent = `Optional · ${parts.join(" · ")}`;
 }
 
 function pageAction(action) {
-  if (!state.totalPages) return;
+  if (!state.totalPages || !state.tool) return;
   if (state.tool.id === "reorder-pages") {
     if (action === "all") state.pageOrder = Array.from({ length: state.totalPages }, (_value, index) => index + 1);
     else if (action === "invert") {
@@ -772,12 +904,16 @@ function renderOptions() {
   body.innerHTML = "";
   state.options = {};
   const tool = state.tool;
+  if (!tool) {
+    $("options-note").textContent = "";
+    return;
+  }
   const saved = savedOptions(tool.id);
   $("options-note").textContent = tool.page_ranges
-    ? "Choose pages in the grid above, or type a range here."
+    ? "Choose pages in the panel above, or type a range here."
     : tool.multiple
-      ? "Use “Pages” next to a file to convert only part of it."
-      : "";
+      ? "Optional: “Pages & rotation” above picks pages and turns per file."
+      : "Optional: “Pages & rotation” above picks pages and turns.";
   for (const option of tool.options || []) {
     const initial = Object.prototype.hasOwnProperty.call(saved, option.name) ? saved[option.name] : option.default;
     state.options[option.name] = initial;
@@ -833,6 +969,7 @@ function renderOptions() {
 
 function collectOptions() {
   const options = {};
+  if (!state.tool) return options;
   for (const option of state.tool.options || []) {
     const node = document.querySelector(`[data-option="${option.name}"]`);
     if (!node) continue;
@@ -847,7 +984,10 @@ function collectOptions() {
   for (const key of ["pages", "order"]) {
     if (options[key] !== undefined) options[key] = String(options[key] || "").trim();
   }
-  if (state.tool.multiple) {
+  // Per-file page ranges: the drill-down works for every tool. Tools that read
+  // their own "pages" field already carry the selection above, so sending ranges
+  // here as well would trim the file twice.
+  if (!state.tool.page_ranges) {
     const byDoc = {};
     for (const [docId, set] of Object.entries(state.pagesByDoc)) {
       if (set && set.size) byDoc[docId] = compressRanges(set);
@@ -981,7 +1121,7 @@ async function usePassword(event) {
 
 /* --------------------------------------------------------------------- run */
 async function startRun() {
-  if (!state.batch || state.running) return;
+  if (!state.batch || !state.tool || state.running) return;
   state.running = true;
   $("run").disabled = true;
   hideResults();
@@ -1255,7 +1395,7 @@ async function deleteBatch(id) {
       state.files = [];
       state.job = null;
       hideResults();
-      updatePanels();
+      resetTool();
     }
     refreshLibrary();
   } catch (error) {
