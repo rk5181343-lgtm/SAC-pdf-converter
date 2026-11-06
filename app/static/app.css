@@ -1,3 +1,6 @@
+/* A working-document palette: deep navy for structure, slate neutrals for text
+   and surfaces, one teal accent for what is live or passed, and muted warning /
+   danger tones. Every colour lives here, so the app stays one coherent scheme. */
 :root {
   --ink: #0f1f33;
   --ink-soft: #35475c;
@@ -405,7 +408,6 @@ button { font-family: inherit; }
 .doc-row { display: flex; align-items: center; gap: 10px; font-size: 0.88rem; }
 .doc-row .kind { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-faint); width: 56px; }
 .doc-row a { margin-left: auto; }
-
 
 /* ----------------------------------------------------------------- lookup */
 .lookup-form { display: flex; gap: 8px; }
