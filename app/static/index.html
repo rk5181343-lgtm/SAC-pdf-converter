@@ -52,6 +52,15 @@
         <p class="muted" id="drop-hint">PDF files up to 40&nbsp;MB each.</p>
       </div>
 
+      <!-- One thin loading bar, right under the upload area: nothing to read,
+           and the download it produces lands just below the button. The
+           percentage and message stay in the DOM only for screen readers. -->
+      <div class="loadbar" id="progress-panel" hidden role="progressbar" aria-label="Converting" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <span id="progress-fill"></span>
+        <span class="visually-hidden" id="progress-percent">0%</span>
+        <span class="visually-hidden" id="progress-message"></span>
+      </div>
+
       <div class="panel" id="files-panel" hidden>
         <div class="panel-head">
           <h3>Files</h3>
@@ -103,15 +112,6 @@
       <div class="panel runbar" id="runbar" hidden>
         <button class="primary" id="run" type="button">Convert</button>
         <span class="muted" id="run-meta"></span>
-      </div>
-
-      <div class="panel progress" id="progress-panel" hidden>
-        <div class="panel-head">
-          <h3 id="progress-title">Working…</h3>
-          <span class="muted" id="progress-percent">0%</span>
-        </div>
-        <div class="bar"><span id="progress-fill"></span></div>
-        <p class="muted" id="progress-message"></p>
       </div>
 
       <div class="panel" id="results-panel" hidden>

@@ -377,8 +377,24 @@ button { font-family: inherit; }
 .runbar .primary { min-width: 140px; }
 
 /* --------------------------------------------------------------- progress */
-.bar { height: 8px; background: var(--surface-hover); border-radius: 999px; overflow: hidden; margin: 8px 0; }
-.bar span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--teal)); border-radius: 999px; transition: width 0.3s ease; }
+/* The only loading indicator: a thin strip tucked under the upload area. */
+.loadbar { position: relative; height: 6px; margin-top: -8px; background: var(--surface-hover); border-radius: 999px; overflow: hidden; }
+.loadbar[hidden] { display: none; }
+.loadbar span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--teal)); border-radius: 999px; transition: width 0.25s ease; }
+.loadbar .visually-hidden { display: block; height: auto; }
+/* Once the download is on screen the bar has nothing left to say. */
+.workspace:has(#results-panel:not([hidden])) #progress-panel { display: none; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
 
 /* ---------------------------------------------------------------- results */
 .result { display: flex; align-items: center; gap: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; background: var(--surface); }
