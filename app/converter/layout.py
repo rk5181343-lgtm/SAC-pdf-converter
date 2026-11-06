@@ -231,7 +231,8 @@ def _images(source: PdfSource, page: PageData, boundaries: list[float], bands: l
             width, height = int(width * shrink), int(height * shrink)
             crop.thumbnail((width, height))
         buffer = io.BytesIO()
-        crop.save(buffer, format="PNG", optimize=True)
+        # Level 3 is smaller and several times quicker than zlib's filter search.
+        crop.save(buffer, format="PNG", compress_level=3)
         pieces.append(
             GridImage(
                 row=_index_for(bands, (top + bottom) / 2),

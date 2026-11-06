@@ -165,7 +165,8 @@ class PdfSource:
             ) from exc
         self._pdfium = None
         self._pages: dict[int, PageData] = {}
-        self._renders: dict[int, Image.Image] = {}
+        self._renders: dict[tuple[int, int], Image.Image] = {}
+        self._render_order: list[tuple[int, int]] = []
 
     # -- lifecycle ---------------------------------------------------------
     def close(self) -> None:
@@ -177,6 +178,7 @@ class PdfSource:
                 pass
         self._pages.clear()
         self._renders.clear()
+        self._render_order.clear()
 
     def __enter__(self) -> "PdfSource":
         return self
@@ -203,7 +205,6 @@ class PdfSource:
         # the page's text, and extract_text() is pdfminer's most expensive call.
         words = self._words(page)
         text = "\n".join(lines_from_words(words)) if words else self._page_text(page)
-
         tables = self._tables(page)
         images = self._image_boxes(page)
 
@@ -321,14 +322,20 @@ class PdfSource:
         return self._pdfium
 
     def render(self, index: int, dpi: int | None = None) -> Image.Image:
-        if index in self._renders and dpi is None:
-            return self._renders[index]
-        document = self.document()
         target_dpi = int(dpi or self.dpi)
-        page = document[index]
-        image = page.render(scale=target_dpi / 72.0).to_pil().convert("RGB")
-        if dpi is None:
-            self._renders[index] = image
+        key = (index, target_dpi)
+        cached = self._renders.get(key)
+        if cached is not None:
+            return cached
+        document = self.document()
+        image = document[index].render(scale=target_dpi / 72.0).to_pil().convert("RGB")
+        # A page is rendered at 72 dpi for its fills and at 130 dpi for its
+        # pictures; without this cache the same page was rasterised once per
+        # embedded image. Keep only the last few so a long file stays light.
+        self._renders[key] = image
+        self._render_order.append(key)
+        while len(self._render_order) > 4:
+            self._renders.pop(self._render_order.pop(0), None)
         return image
 
     def crop(self, index: int, bbox: tuple[float, float, float, float], dpi: int | None = None) -> Image.Image:
