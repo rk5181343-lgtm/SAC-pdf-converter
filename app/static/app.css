@@ -439,6 +439,52 @@ button { font-family: inherit; }
 .prose ul { padding-left: 20px; margin: 8px 0 12px; }
 .prose li { margin-bottom: 8px; }
 
+/* ------------------------------------------------------------------- motion */
+/* Short, small moves: a panel settles when it appears, results arrive in order,
+   the loading strip breathes while a job runs, and a held page lifts and shrinks
+   as it is dragged. Everything here is switched off for reduced-motion users. */
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes pop-in { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: scale(1); } }
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+.tab, .toolrail .tool, .chip, .primary, .secondary, .page, .rotate {
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.12s ease;
+}
+
+.panel { animation: rise 0.18s ease-out both; }
+.status.is-ok, .status.is-error { animation: rise 0.18s ease-out; }
+
+.loadbar:not([hidden]) { animation: breathe 1.6s ease-in-out infinite; }
+
+.result { animation: rise 0.22s ease-out both; }
+.result:nth-of-type(2) { animation-delay: 0.04s; }
+.result:nth-of-type(3) { animation-delay: 0.08s; }
+.result:nth-of-type(4) { animation-delay: 0.12s; }
+.result:nth-of-type(5) { animation-delay: 0.16s; }
+.zip-row, .error-row { animation: rise 0.22s ease-out both; }
+
+.drilldown[open] .pagegrid { animation: rise 0.16s ease-out; }
+.batch-body { animation: rise 0.18s ease-out; }
+
+/* The page you are holding lifts slightly, and the page under the pointer
+   swells to show it will take the drop. */
+.page:hover { transform: translateY(-2px); }
+.page .order { animation: pop-in 0.16s ease-out; }
+.page-cell.is-dragging { transform: scale(0.97); opacity: 0.4; }
+.page-cell.is-drop .page { transform: scale(1.02); }
+
+.primary:active, .secondary:active, .chip:active { transform: translateY(1px); }
+.rotate:active { transform: scale(0.92); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
 /* --------------------------------------------------------------- responsive */
 @media (max-width: 980px) {
   .view.is-active { flex-direction: column; }
