@@ -105,15 +105,22 @@ def _render(doc, index: int, dpi: float = 150.0) -> Image.Image:
     return doc[index].render(scale=float(dpi) / 72.0).to_pil().convert("RGB")
 
 
-def _png_bytes(image: Image.Image) -> bytes:
+def _png_bytes(image: Image.Image, level: int = 3) -> bytes:
+    """PNG bytes for a rendered page.
+
+    ``optimize=True`` makes zlib try every filter and costs more than the render
+    itself: measured at 278 ms for a 150 dpi page against 40 ms here, and the
+    faster setting even came out smaller. ``level=1`` is for images that are only
+    embedded into a PDF, where the writer compresses the pixels again anyway.
+    """
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=True)
+    image.save(buffer, format="PNG", compress_level=max(1, min(int(level), 9)))
     return buffer.getvalue()
 
 
 def _jpg_bytes(image: Image.Image, quality: int = 80) -> bytes:
     buffer = io.BytesIO()
-    image.convert("RGB").save(buffer, format="JPEG", quality=int(quality), optimize=True)
+    image.convert("RGB").save(buffer, format="JPEG", quality=int(quality))
     return buffer.getvalue()
 
 
@@ -154,7 +161,28 @@ def _draw_fitted(c, image: Image.Image, page_width: float, page_height: float, m
     width, height = _fit(image, max(page_width - 2 * margin, 1), max(page_height - 2 * margin, 1))
     x = (page_width - width) / 2
     y = (page_height - height) / 2
-    c.drawImage(ImageReader(io.BytesIO(_png_bytes(image))), x, y, width=width, height=height)
+    # The PDF writer re-compresses the pixels itself, so the PNG here is only a
+    # transport: the fastest lossless setting is the right one.
+    c.drawImage(ImageReader(io.BytesIO(_png_bytes(image, level=1))), x, y, width=width, height=height)
+
+
+def _draw_embedded(c, data: bytes, page_width: float, page_height: float, margin: float = 0.0) -> None:
+    """Place already-compressed bytes on the page, copied into the PDF as they are.
+
+    A JPEG stays a JPEG: reportlab writes the original stream with a DCT filter
+    instead of decoding it, re-encoding it and inflating it back to raw pixels.
+    """
+    reader = ImageReader(io.BytesIO(data))
+    pixels_w, pixels_h = reader.getSize()
+    if not pixels_w or not pixels_h:
+        raise ValueError("That image could not be read.")
+    width, height = _fit_pixels(pixels_w, pixels_h, max(page_width - 2 * margin, 1), max(page_height - 2 * margin, 1))
+    c.drawImage(reader, (page_width - width) / 2, (page_height - height) / 2, width=width, height=height)
+
+
+def _fit_pixels(width: int, height: int, box_width: float, box_height: float) -> tuple[float, float]:
+    scale = min(box_width / max(width, 1), box_height / max(height, 1))
+    return width * scale, height * scale
 
 
 def _assemble(items: list[dict], default_size: tuple[float, float] | None = None) -> bytes:
@@ -167,6 +195,8 @@ def _assemble(items: list[dict], default_size: tuple[float, float] | None = None
         c.setPageSize(size)
         if item.get("draw"):
             item["draw"](c, size[0], size[1])
+        elif item.get("jpeg"):
+            _draw_embedded(c, item["jpeg"], size[0], size[1], item.get("margin", 0.0))
         else:
             _draw_fitted(c, item["image"], size[0], size[1], item.get("margin", 0.0))
         c.showPage()
@@ -319,7 +349,7 @@ def ocr_pdf(files: list[dict], options: dict) -> list[dict]:
             recognised += len(words)
 
             def draw(c, width, height, _image=image, _words=words, _size=size):
-                c.drawImage(ImageReader(io.BytesIO(_png_bytes(_image))), 0, 0, width=width, height=height)
+                c.drawImage(ImageReader(io.BytesIO(_png_bytes(_image, level=1))), 0, 0, width=width, height=height)
                 c.setFillColorRGB(0, 0, 0)
                 for word in _words:
                     font_size = max(4.0, min(word.height * 0.95, 24))
@@ -559,10 +589,11 @@ def compress_pdf(files: list[dict], options: dict) -> list[dict]:
             if grayscale:
                 image = image.convert("L").convert("RGB")
             buffer = io.BytesIO()
-            image.save(buffer, format="JPEG", quality=quality, optimize=True)
-            compressed = Image.open(io.BytesIO(buffer.getvalue())).convert("RGB")
+            image.save(buffer, format="JPEG", quality=quality)
             page = reader.pages[index]
-            items.append({"image": compressed, "size": (float(page.mediabox.width), float(page.mediabox.height))})
+            # Hand the JPEG to the writer untouched: decoding it here only to have
+            # reportlab encode it again inflated the file it was meant to shrink.
+            items.append({"jpeg": buffer.getvalue(), "size": (float(page.mediabox.width), float(page.mediabox.height))})
         data = _assemble(items)
         outputs.append(_out(f"{_stem(file['filename'])}-compressed.pdf", data,
                             meta={"pages": len(items), "before": len(file["data"]), "after": len(data)}))
@@ -603,7 +634,7 @@ def pages_per_sheet(files: list[dict], options: dict) -> list[dict]:
                     image = _render(doc, index, 120)
                     fitted_width, fitted_height = _fit(image, cell_width * 0.96, cell_height * 0.96)
                     c.drawImage(
-                        ImageReader(io.BytesIO(_png_bytes(image))),
+                        ImageReader(io.BytesIO(_png_bytes(image, level=1))),
                         x + (cell_width - fitted_width) / 2,
                         y + (cell_height - fitted_height) / 2,
                         width=fitted_width,
