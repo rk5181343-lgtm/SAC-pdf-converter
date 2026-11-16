@@ -74,9 +74,16 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 TOTAL_PATTERN = re.compile(
-    r"^(total|sub-?total|grand total|balance (brought|carried) forward|balance (c/f|b/f)|"
+    r"^(total|totals?|sub-?total|grand total|transaction total|total (dr|cr)|"
+    r"balance (brought|carried) forward|balance (c/f|b/f)|"
     r"opening balance|closing balance|carried forward|brought forward)\b",
     re.IGNORECASE,
+)
+
+# A column that only says whether the amount is a debit or a credit: Axis prints
+# "Debit/Credit", ICICI "Cr/Dr". It is a direction flag, not an amount column.
+DIRECTION_HEADER = re.compile(
+    r"(debit|dr|withdrawal)\s*/\s*(credit|cr|deposit)|cr\s*/\s*dr|\bdrcr\b", re.IGNORECASE
 )
 
 CURRENCY_CHARS = "$€£¥₹₦₽₩"
@@ -183,6 +190,11 @@ def date_order_for(samples: list[str]) -> str:
 
 def parse_date(value: object, order: str = "dmy") -> date | None:
     text = clean_text(value)
+    if not text:
+        return None
+    # ICICI prints "01/09/2026 07:55:29 AM" in one cell: the time is not part of
+    # the date, and keeping it made the whole cell plain text.
+    text = re.sub(r"\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp]\.?[Mm]\.?)?$", "", text).strip()
     if not text:
         return None
     iso = re.match(r"^(\d{4})-(\d{2})-(\d{2})", text)
@@ -317,7 +329,16 @@ def detect_doc_type(filename: str, pages: list[PageData]) -> tuple[str, float]:
 def page_tables(page: PageData) -> list[list[list[str]]]:
     tables = [table.rows for table in page.tables if table.rows]
     if tables:
-        return tables
+        best = _pick_table(tables)
+        if _header_index(best) is not None:
+            return [best]
+        # pdfplumber's box starts at the first ruling, which on Axis and SBI sits
+        # below the printed header: the table then has no column names and every
+        # value is read as a heading. The clustered pass keeps the header line.
+        clustered = cluster_table(page)
+        if clustered and _header_index(clustered) is not None:
+            return [clustered]
+        return [best]
     clustered = cluster_table(page)
     return [clustered] if clustered else []
 
@@ -336,7 +357,15 @@ def cluster_table(page: PageData) -> list[list[str]]:
     lines = [line for line in _group_rows(page.words) if line]
     if not lines:
         return []
-    bands = _column_bands(lines[_table_start(lines):], page.width)
+    start = _table_start(lines)
+    header_at = _header_line_index(lines, start)
+    # Bands are learned from the data lines: a wide heading such as "Transaction
+    # Date (dd/mm/yyyy)" runs across the gutters, and counting it as content
+    # closed every column it crossed, welding headings and values together.
+    band_lines = [
+        line for index, line in enumerate(lines) if index >= start and index != header_at
+    ]
+    bands = _column_bands(band_lines if len(band_lines) >= 2 else lines[start:], page.width)
     if bands:
         rows = [[_band_text(line, band) for band in bands] for line in lines]
     else:
@@ -391,12 +420,25 @@ def _table_start(lines: list[list]) -> int:
     return 0
 
 
+def _header_line_index(lines: list[list], start: int = 0) -> int | None:
+    """Index of the printed table heading, if this page carries one.
+
+    The search starts a few lines above ``start``: that index is itself derived
+    from the first printed amount, which on a tight table can already be below
+    the heading.
+    """
+    offset = max(0, start - 4)
+    window = lines[offset:offset + 18]
+    index = _header_index([_split_cells(line) for line in window])
+    return offset + index if index is not None else None
+
+
 def _column_bands(lines: list[list], page_width: float) -> list[tuple[float, float]]:
     """The page's own columns: strips of x that no line writes into are gutters.
 
-    A gutter has to be clear in most lines (a long description or a footer is
-    tolerated) and wider than a word space, so text inside one cell is never torn
-    apart while a real column boundary is found even when it is narrow.
+    A gutter has to be free in nearly every line (a handful of long descriptions
+    are tolerated) and wider than a word space, so text inside one cell is never
+    torn apart while a real column boundary is found even when it is narrow.
     """
     if len(lines) < 2:
         return []
@@ -416,6 +458,9 @@ def _column_bands(lines: list[list], page_width: float) -> list[tuple[float, flo
         for x in touched:
             coverage[x] += 1
 
+    # A gutter has to be clear in most lines, but not in every one: the two or
+    # three title lines above the table cross every column, and a page footer
+    # does too, so a strict "free in all lines" rule would hide every column.
     occupied = max(0, int(len(lines) * 0.25))
     gutters: list[tuple[int, int]] = []
     start: int | None = None
@@ -444,15 +489,21 @@ def _column_bands(lines: list[list], page_width: float) -> list[tuple[float, flo
 
 
 def _band_text(line: list, band: tuple[float, float]) -> str:
-    """The words of one line that sit inside one column band."""
+    """The words of one line that start inside one column band.
+
+    A heading is often wider than its column ("Transaction Date (dd/mm/yyyy)"),
+    so the word's left edge decides where it belongs; its centre would pull the
+    heading into the next column and interleave two labels.
+    """
     low, high = band
     return " ".join(
-        word.text for word in line if low <= (word.x0 + word.x1) / 2 < high
+        word.text for word in line if low <= word.x0 < high
     ).strip()
 
 
 # -------------------------------------------------------------------- columns
 ROLE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "direction": (),
     "date": ("date", "posted", "value date", "txn date", "transaction date", "period", "day"),
     "description": (
         "description", "details", "narrative", "particulars", "memo", "reference",
@@ -481,15 +532,32 @@ def classify_columns(columns: list[str]) -> dict[str, int | None]:
     taken: set[int] = set()
     normalised = [clean_text(column).lower() for column in columns]
 
+    for index, name in enumerate(normalised):
+        if name and DIRECTION_HEADER.search(name):
+            roles["direction"] = index
+            taken.add(index)
+            break
+
     for role in ("date", "balance", "debit", "credit", "description", "amount"):
         for index, name in enumerate(normalised):
             if index in taken or not name:
                 continue
-            if role == "amount" and any(token in name for token in ("balance", "debit", "credit")):
+            if role == "amount" and any(
+                token in name for token in ("balance", "debit", "credit", "date")
+            ):
                 continue
             if any(_header_matches(name, keyword) for keyword in ROLE_KEYWORDS[role]):
                 roles[role] = index
                 taken.add(index)
+                break
+
+    if roles["amount"] is None and roles["balance"] is not None:
+        # "Transaction Amount" split by a narrow gutter becomes "Transaction" +
+        # "(2)", so the heading no longer says "amount". In a statement the
+        # unclaimed column just left of the balance is the amount.
+        for index in range(int(roles["balance"]) - 1, -1, -1):
+            if index not in taken:
+                roles["amount"] = index
                 break
     return roles
 
@@ -522,7 +590,65 @@ def _looks_like_amount(value: str) -> bool:
     return bool(text) and AMOUNT_TEXT.match(text) is not None and parse_number(text) is not None
 
 
+HEADER_WORDS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        [keyword for keywords in ROLE_KEYWORDS.values() for keyword in keywords]
+        + ["ref", "cheque", "chq", "branch", "particulars", "narration", "txn", "value", "s.no", "sl", "type"]
+    )
+)
+
+
+def _header_score(row: list[str]) -> int:
+    """How many distinct column headings this row names.
+
+    Counted across the whole row, not per cell: a heading that wrapped or was
+    split by a narrow gutter arrives as one long cell ("Transaction Date
+    (dd/mm/yyyy) Value Date (dd/mm/yyyy) Particulars …") and still has to be
+    recognised as the header.
+    """
+    text = " ".join(clean_text(cell) for cell in row).lower()
+    if not text.strip():
+        return 0
+    return sum(1 for keyword in HEADER_WORDS if _header_matches(text, keyword))
+
+
+def _is_data_row(row: list[str]) -> bool:
+    """A row of facts: two or more printed dates or amounts."""
+    facts = sum(
+        1 for cell in row if parse_date(cell) is not None or _looks_like_amount(cell)
+    )
+    return facts >= 2
+
+
+def _header_index(rows: list[list[str]], limit: int = 16) -> int | None:
+    """The row that names the columns, if the page prints one.
+
+    The old rule took the first row of mostly text, which on a statement whose
+    header sits outside pdfplumber's box was the first *data* row: every column
+    was then named after a value ("1", "05/09/2026", …) and no date, amount or
+    balance was ever recognised.
+
+    The header is found by position instead: it is the labelled row just above
+    the first row of facts. Scanning upwards from the data keeps a title block
+    ("Account Name : …", "Opening Balance as on …") from being mistaken for it.
+    """
+    first_data = None
+    for index, row in enumerate(rows[:limit]):
+        if _is_data_row(row):
+            first_data = index
+            break
+    if first_data is None:
+        return None
+    for index in range(first_data - 1, max(-1, first_data - 4), -1):
+        if _header_score(rows[index]) >= 3:
+            return index
+    return None
+
+
 def _header_row(rows: list[list[str]]) -> int | None:
+    index = _header_index(rows)
+    if index is not None:
+        return index
     for index, row in enumerate(rows[:6]):
         filled = [cell for cell in row if clean_text(cell)]
         if len(filled) < 2:
@@ -534,7 +660,7 @@ def _header_row(rows: list[list[str]]) -> int | None:
         has_numbers = any(_looks_like_amount(cell) for cell in following)
         if text_cells >= max(2, int(len(filled) * 0.6)) and (has_numbers or index == len(rows) - 1):
             return index
-    return 0 if rows else None
+    return None
 
 
 def _is_total_row(cells: list[str]) -> bool:
@@ -555,11 +681,24 @@ def _pick_table(tables: list[list[list[str]]]) -> list[list[str]]:
     return max(tables, key=score)
 
 
-def _records_from_table(table: list[list[str]]) -> tuple[list[str], list[dict], list[bool]]:
+def _records_from_table(
+    table: list[list[str]], known: list[str] | None = None
+) -> tuple[list[str], list[dict], list[bool]]:
+    """Rows of one page's table, with its column names when the page prints them.
+
+    ``known`` carries the names found on an earlier page: a continuation page
+    usually has no heading of its own, and without them its first data row used
+    to be consumed as one and silently lost.
+    """
     if not table:
         return [], [], []
-    header_index = _header_row(table) or 0
-    raw_columns = table[header_index]
+    header = _header_row(table)
+    if header is None and known and len(known) == len(table[0]):
+        header_index = -1
+        raw_columns = list(known)
+    else:
+        header_index = header if header is not None else 0
+        raw_columns = table[header_index]
     columns = _dedupe_columns(raw_columns)
     records: list[dict] = []
     flags: list[bool] = []
@@ -572,12 +711,23 @@ def _records_from_table(table: list[list[str]]) -> tuple[list[str], list[dict], 
             continue  # repeated header
         records.append(dict(zip(columns, cells)))
         flags.append(_is_total_row(cells))
-    columns, records, flags = _merge_continuations(columns, records, flags)
+    columns, records, flags = _merge_continuations(columns, records, flags, _description_name(columns))
     return columns, records, flags
 
 
+def _description_name(columns: list[str]) -> str | None:
+    """The column that holds the narrative, whatever this bank calls it."""
+    index = classify_columns(columns).get("description")
+    if index is not None and index < len(columns):
+        return columns[index]
+    return DESCRIPTION_COLUMN if DESCRIPTION_COLUMN in columns else None
+
+
 def _merge_continuations(
-    columns: list[str], records: list[dict], flags: list[bool]
+    columns: list[str],
+    records: list[dict],
+    flags: list[bool],
+    description_column: str | None = None,
 ) -> tuple[list[str], list[dict], list[bool]]:
     """Join a wrapped description to the row above it.
 
@@ -586,18 +736,40 @@ def _merge_continuations(
     every value blank, which reads as a broken row in the sheet; here the words
     are appended to the description of the record they belong to.
     """
-    if len(records) < 2 or DESCRIPTION_COLUMN not in columns:
+    description_column = description_column or (DESCRIPTION_COLUMN if DESCRIPTION_COLUMN in columns else None)
+    if len(records) < 2 or not description_column:
         return columns, records, flags
-    others = [column for column in columns if column != DESCRIPTION_COLUMN]
+    roles = classify_columns(columns)
+    date_column = (
+        columns[roles["date"]] if roles.get("date") is not None and roles["date"] < len(columns) else None
+    )
+    number_columns = [
+        columns[roles[role]]
+        for role in ("amount", "debit", "credit", "balance")
+        if roles.get(role) is not None and roles[role] < len(columns)
+    ]
+    others = [column for column in columns if column != description_column]
+    text_columns = [
+        column for column in others
+        if column != date_column and column not in number_columns
+    ]
     kept: list[dict] = []
     kept_flags: list[bool] = []
     for record, flag in zip(records, flags):
-        text = clean_text(record.get(DESCRIPTION_COLUMN, ""))
+        text = clean_text(record.get(description_column, ""))
+        has_date = bool(date_column and parse_date(record.get(date_column)))
+        has_number = any(parse_number(record.get(column)) is not None for column in number_columns)
         empty_elsewhere = not any(clean_text(record.get(column, "")) for column in others)
-        if kept and text and empty_elsewhere and not flag:
+        # A line with no date and no amount is a wrapped narrative, a section
+        # heading or a page footer, not a record: its words join the row above
+        # instead of becoming a blank row in the sheet.
+        if kept and text and not flag and (empty_elsewhere or (not has_date and not has_number)):
             previous = kept[-1]
-            joined = f"{clean_text(previous.get(DESCRIPTION_COLUMN, ''))} {text}".strip()
-            previous[DESCRIPTION_COLUMN] = joined
+            extra = " ".join(
+                clean_text(record.get(column, "")) for column in text_columns if column != description_column
+            ).strip()
+            parts = [clean_text(previous.get(description_column, "")), text, extra]
+            previous[description_column] = " ".join(part for part in parts if part).strip()
             continue
         kept.append(dict(record))
         kept_flags.append(flag)
@@ -696,17 +868,29 @@ def extract(source: PdfSource, filename: str = "") -> ExtractResult:
         signature: tuple[str, ...] | None = None
         collected: list[tuple[int, int, dict, bool]] = []
         for number, table in [primary] + [block for block in blocks if block is not primary]:
-            page_columns, page_records, page_flags = _records_from_table(table)
+            page_columns, page_records, page_flags = _records_from_table(
+                table, columns if signature is not None else None
+            )
             if not page_records:
                 continue
             if signature is None:
                 signature = _signature(page_columns)
                 columns = page_columns
-            elif _signature(page_columns) != signature:
+            elif len(page_columns) != len(columns):
                 notes.append(
                     f"Page {number} has a different table layout; those rows were left out."
                 )
                 continue
+            elif _signature(page_columns) != signature:
+                # Same table, different wording (SBI repeats its headings on every
+                # page, some banks print none after page one). Keep the first
+                # page's names and line the columns up by position instead of
+                # throwing the page away, which used to lose every page but one.
+                page_records = [
+                    {columns[index]: record.get(page_columns[index], "")
+                     for index in range(len(columns)) if index < len(page_columns)}
+                    for record in page_records
+                ]
             collected.extend(
                 (number, index, record, flag)
                 for index, (record, flag) in enumerate(zip(page_records, page_flags))
