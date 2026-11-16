@@ -203,7 +203,7 @@ class PdfSource:
         page = self._plumber.pages[index]
         # One layout pass per page, not two: the positioned words already carry
         # the page's text, and extract_text() is pdfminer's most expensive call.
-        words = self._words(page)
+        words = self._page_words(index, page)
         text = "\n".join(lines_from_words(words)) if words else self._page_text(page)
         tables = self._tables(page)
         images = self._image_boxes(page)
@@ -240,6 +240,83 @@ class PdfSource:
             return True
         visible = len(text.strip())
         return visible < OCR_CHAR_THRESHOLD and len(words) < 6
+
+    def _page_words(self, index: int, page) -> list[Word]:
+        """Positioned words, from pdfium when it can supply them.
+
+        pdfminer has to walk every content-stream object in Python to place a
+        character (measured at ~0.2 s per statement page); pdfium does the same
+        work in C at ~5 ms. pdfium also gives a box per character but no font
+        name, so the pdfminer path stays as the fallback and keeps its bold
+        detection for anything pdfium cannot read.
+        """
+        try:
+            fast = self._pdfium_words(index)
+        except Exception:
+            fast = []
+        if len(fast) >= 3:
+            return fast
+        return self._words(page)
+
+    def _pdfium_words(self, index: int) -> list["Word"]:
+        document = self.document()
+        pdf_page = document[index]
+        width, height = pdf_page.get_size()
+        textpage = pdf_page.get_textpage()
+        count = textpage.count_chars()
+        if not count:
+            return []
+
+        pieces: list[list[tuple]] = []
+        current: list[tuple] = []
+        previous = None
+        for position in range(count):
+            char = textpage.get_text_range(position, 1)
+            left, bottom, right, top = textpage.get_charbox(position)
+            if right < left:
+                left, right = right, left
+            if top < bottom:
+                top, bottom = bottom, top
+            if not char.strip():
+                if current:
+                    pieces.append(current)
+                    current = []
+                previous = None
+                continue
+            if previous is not None and current:
+                size = max(top - bottom, 1.0)
+                gap = left - previous[3]
+                dropped = abs(bottom - previous[2]) > size * 0.6
+                # 3 pt is pdfplumber's own word margin: tighter than that split
+                # "5,00,000.00" and "(1164)" into loose characters.
+                if gap > 3.0 or dropped:
+                    pieces.append(current)
+                    current = []
+            current.append((char, left, bottom, right, top))
+            previous = (char, left, bottom, right, top)
+        if current:
+            pieces.append(current)
+
+        words: list[Word] = []
+        for piece in pieces:
+            text = "".join(item[0] for item in piece).strip()
+            if not text:
+                continue
+            x0 = min(item[1] for item in piece)
+            x1 = max(item[3] for item in piece)
+            low = min(item[2] for item in piece)
+            high = max(item[4] for item in piece)
+            words.append(
+                Word(
+                    text=text,
+                    x0=x0,
+                    x1=x1,
+                    top=max(0.0, height - high),
+                    bottom=max(0.0, height - low),
+                    size=max(high - low, 1.0),
+                )
+            )
+        return words
 
     def _page_text(self, page) -> str:
         """Text for pages that carry no positioned words (a font pdfminer cannot box)."""
