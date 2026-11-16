@@ -20,7 +20,7 @@ WIDTH, HEIGHT = A4
 
 
 def _table(page, xs, header, rows, top, row_height=16, header_line=True, rule=True):
-    page.setFont("Helvetica-Bold", 6.5)
+    page.setFont("Helvetica-Bold", 6.0)
     if header:
         for x, name in zip(xs, header):
             page.drawString(x, top, name)
@@ -44,7 +44,7 @@ def _sbi_like(pages: int = 2) -> bytes:
     buffer = io.BytesIO()
     page = canvas.Canvas(buffer, pagesize=A4)
     header = ["Txn Date", "Value Date", "Description", "Ref No./Cheque No.", "Branch Code", "Debit", "Credit", "Balance"]
-    xs = [20, 68, 112, 300, 352, 392, 438, 486]
+    xs = [20, 70, 120, 290, 356, 410, 452, 490]
     for number in range(pages):
         if number == 0:
             page.setFont("Helvetica-Bold", 9)
@@ -73,17 +73,20 @@ def _axis_like() -> bytes:
     buffer = io.BytesIO()
     page = canvas.Canvas(buffer, pagesize=A4)
     header = ["S.NO", "Transaction Date", "Value Date", "Particulars", "Amount(INR)",
-              "Debit/Credit", "Balance(INR)", "Cheque Number", "Branch Name(SOL)"]
-    xs = [22, 42, 92, 146, 306, 372, 400, 462, 492]
+              "Debit/Credit", "Balance(INR)", "Branch Name(SOL)"]
+    xs = [22, 44, 104, 150, 300, 366, 414, 486]
     rows = []
     for index in range(5):
         rows.append([
             str(index + 1), "05/09/2026", "05/09/2026", f"Offset for [D14642{index:03d}]",
             f"{500000 + index}.00", "DR" if index % 2 else "CR",
-            f"-{index + 1},02,32,826.54", "", "CBB KOLKATA (1164)",
+            f"-{index + 1},02,32,826.54", "CBB KOLKATA (1164)",
         ])
-    rows.append(["6", "", "", "TRANSACTION TOTAL DR/CR", "24,80,42,813.50", "DR", "24,71,00,000.00", "", ""])
-    _table(page, xs, header, rows, HEIGHT - 120)
+    rows.append(["6", "", "", "TRANSACTION TOTAL DR/CR", "24,80,42,813.50", "DR", "24,71,00,000.00", ""])
+    bottom = _table(page, xs, header, rows, HEIGHT - 120)
+    page.setFont("Helvetica", 6)
+    page.drawString(22, bottom - 18, "Balance: the constituent of any discrepancy OFFICE, TRISHUL, Opp. Samartheswar, 380006.")
+    page.drawString(22, bottom - 30, "This is a computer generated statement and does not require a signature.")
     page.save()
     return buffer.getvalue()
 
@@ -94,7 +97,7 @@ def _icici_like() -> bytes:
     page = canvas.Canvas(buffer, pagesize=A4)
     header = ["No.", "Transaction ID", "Value Date", "Txn Posted Date", "ChequeNo.",
               "Description", "Cr/Dr", "Transaction Amount(INR)", "Available Balance(INR)"]
-    xs = [20, 38, 108, 152, 210, 242, 428, 464, 518]
+    xs = [20, 40, 118, 158, 240, 280, 386, 420, 500]
     rows = [
         [str(index + 1), f"S6020{index}607", "01/09/2026", "01/09/2026 07:55:29 AM", "",
          f"UPI/182915408688/Payment {index}", "CR" if index % 2 else "DR",
@@ -114,7 +117,15 @@ def test_every_page_of_a_headerless_continuation_is_kept():
     assert sheet.max_row - 1 == 8, "no row is consumed as a header on page two"
     assert "Page 2" in sources, "page two is not dropped for having no header"
     assert headers[0] == "Txn Date"
-    assert "Balance" in headers
+    assert headers[1:-1] == [
+        "Value Date",
+        "Description",
+        "Ref No./Cheque No.",
+        "Branch Code",
+        "Debit",
+        "Credit",
+        "Balance",
+    ], "Description, Ref, Branch, Debit and Credit are separate columns"
 
 
 def test_amount_and_direction_columns_are_understood():
@@ -129,6 +140,22 @@ def test_amount_and_direction_columns_are_understood():
     assert float(first) == 500000, f"the amount is written as a number, not text: {first!r}"
     assert isinstance(sheet.cell(row=2, column=balance).value, (int, float))
     assert str(sheet.cell(row=2, column=1).value) == "1", "the first data row is not consumed as the header"
+
+    # The TOTAL row is its own row, with its amounts in the amount and balance
+    # columns, and the footer under it is not glued onto the last transaction.
+    total_row = sheet.max_row
+    description = next(index for index, name in enumerate(headers) if "Particular" in str(name)) + 1
+    assert str(sheet.cell(row=total_row, column=description).value).startswith("TRANSACTION TOTAL")
+    assert float(sheet.cell(row=total_row, column=amount).value) == 248042813.50
+    assert float(sheet.cell(row=total_row, column=balance).value) == 247100000.00
+    last_transaction = sheet.cell(row=total_row - 1, column=description).value
+    assert "discrepancy" not in last_transaction and "signature" not in last_transaction
+    body = " ".join(
+        str(cell.value or "")
+        for row in sheet.iter_rows(min_row=2)
+        for cell in row
+    )
+    assert "does not require a signature" not in body
 
 
 def test_a_date_printed_with_a_time_is_still_a_date():
@@ -145,3 +172,5 @@ def test_a_date_printed_with_a_time_is_still_a_date():
     assert dates and dates[0].date().isoformat() == "2026-09-01"
     balance = next(index for index, name in enumerate(headers) if "Balance" in str(name)) + 1
     assert sheet.cell(row=2, column=balance).value == 3508198.49
+    assert "Cr/Dr" in headers and "Description" in headers
+    assert headers.index("Cr/Dr") > headers.index("Description"), "Cr/Dr is not merged into Description"
