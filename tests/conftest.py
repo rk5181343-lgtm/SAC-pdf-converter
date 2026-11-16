@@ -27,9 +27,15 @@ ROWS = [
 ]
 
 
-def _draw_page(page, rows: list[tuple[str, ...]], height: float) -> None:
+def _draw_page(
+    page,
+    rows: list[tuple[str, ...]],
+    height: float,
+    ruled: bool = True,
+    header: str = "Northwind Supplies Ltd",
+) -> None:
     page.setFont("Helvetica-Bold", 14)
-    page.drawString(60, height - 50, "Northwind Supplies Ltd")
+    page.drawString(60, height - 50, header)
     page.setFont("Helvetica", 10)
     page.drawString(60, height - 68, "Bank statement - account 12345678")
     page.drawString(60, height - 84, "Statement period 01/02/2026 to 28/02/2026")
@@ -47,21 +53,22 @@ def _draw_page(page, rows: list[tuple[str, ...]], height: float) -> None:
             page.drawString(x + 4, baseline, cell)
             x += widths[column]
 
-    total_width = sum(widths)
-    table_bottom = top - len(rows) * row_height
-    for index in range(len(rows) + 1):
-        y = top - index * row_height
-        page.line(x0, y, x0 + total_width, y)
-    x = x0
-    for w in widths:
-        page.line(x, top, x, table_bottom)
-        x += w
-    page.line(x0 + total_width, top, x0 + total_width, table_bottom)
+    if ruled:
+        total_width = sum(widths)
+        table_bottom = top - len(rows) * row_height
+        for index in range(len(rows) + 1):
+            y = top - index * row_height
+            page.line(x0, y, x0 + total_width, y)
+        x = x0
+        for w in widths:
+            page.line(x, top, x, table_bottom)
+            x += w
+        page.line(x0 + total_width, top, x0 + total_width, table_bottom)
 
     page.showPage()
 
 
-def build_statement_pdf(pages: int = 1) -> bytes:
+def build_statement_pdf(pages: int = 1, header: str = "Northwind Supplies Ltd") -> bytes:
     """A statement with a ruled table; later pages repeat the same columns."""
     buffer = io.BytesIO()
     doc = canvas.Canvas(buffer, pagesize=A4)
@@ -73,7 +80,7 @@ def build_statement_pdf(pages: int = 1) -> bytes:
             rows = [ROWS[0]] + [
                 (row[0], f"{row[1]} p{number + 1}", row[2], row[3]) for row in ROWS[1:]
             ]
-        _draw_page(doc, rows, height)
+        _draw_page(doc, rows, height, header=header)
     doc.save()
     return buffer.getvalue()
 
@@ -111,6 +118,12 @@ def statement_pdf() -> bytes:
 
 
 @pytest.fixture(scope="session")
+def axis_header_pdf() -> bytes:
+    """A statement whose filename says nothing but whose letterhead names the bank."""
+    return build_statement_pdf(header="Axis Bank")
+
+
+@pytest.fixture(scope="session")
 def balanced_statement_pdf() -> bytes:
     return build_rows_pdf(BALANCED_ROWS)
 
@@ -118,6 +131,17 @@ def balanced_statement_pdf() -> bytes:
 @pytest.fixture(scope="session")
 def unlabelled_statement_pdf() -> bytes:
     return build_rows_pdf(UNLABELLED_ROWS)
+
+
+@pytest.fixture(scope="session")
+def unruled_statement_pdf() -> bytes:
+    """The same table with no ruling lines: the words alone must define columns."""
+    buffer = io.BytesIO()
+    doc = canvas.Canvas(buffer, pagesize=A4)
+    _width, height = A4
+    _draw_page(doc, list(BALANCED_ROWS), height, ruled=False)
+    doc.save()
+    return buffer.getvalue()
 
 
 @pytest.fixture(scope="session")

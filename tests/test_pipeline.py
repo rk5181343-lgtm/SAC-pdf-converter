@@ -91,6 +91,16 @@ def test_combined_workbook_has_one_sheet_per_bank(statement_pdf):
     ]
 
 
+def test_combined_sheet_name_comes_from_the_statement_header(axis_header_pdf, statement_pdf):
+    files = [
+        {"filename": "statement_1.pdf", "data": axis_header_pdf},
+        {"filename": "sbi_statement.pdf", "data": statement_pdf},
+    ]
+    result = convert_batch(files, {"combine": True, "images": False})
+    combined = _workbook(result["outputs"][-1]["data"])
+    assert combined.sheetnames == ["Summary", "Axis", "SBI", "Clean Data", "Validation"]
+
+
 def test_convert_batch_reports_bad_file(statement_pdf):
     files = [
         {"filename": "good.pdf", "data": statement_pdf},

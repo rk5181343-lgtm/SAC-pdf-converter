@@ -83,7 +83,9 @@ Every source file produces a workbook with three sheets:
 
 With several files, **Also build one combined workbook** adds `Combined workbook.xlsx`:
 a `Summary` sheet, then one sheet per file named after its bank (`Axis`, `SBI`,
-`HDFC`, …), a `Clean Data` sheet with every file's rows, and `Validation`. The
+`HDFC`, …) — read from the statement's own letterhead first, so a file called
+`statement_2.pdf` still lands on `Axis`, with the filename as the fallback — a
+`Clean Data` sheet with every file's rows, and `Validation`. The
 combined workbook holds no layout sheets — each file's own workbook still has its
 `Original Layout`.
 

@@ -46,6 +46,9 @@ def analyse(filename: str, data: bytes, options: dict | None = None) -> dict:
 
         result = extract(source, filename)
         checks = validate(result)
+        # The letterhead names the bank even when the upload does not: keep the
+        # first lines of page one for the combined workbook's sheet names.
+        header_lines = [line for line in source.pages()[0].lines if line.strip()][:6]
 
         layouts = []
         if options["sheets"]["layout"]:
@@ -67,6 +70,7 @@ def analyse(filename: str, data: bytes, options: dict | None = None) -> dict:
         "extract": result,
         "checks": checks,
         "layouts": layouts,
+        "header_lines": header_lines,
         "page_count": source.page_count,
     }
 
@@ -150,7 +154,6 @@ def describe(analysis: dict) -> dict:
         "checks": counts,
         "notes": result.notes,
         "source": analysis["filename"],
-        "kind": "workbook",
     }
 
 

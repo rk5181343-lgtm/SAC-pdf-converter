@@ -13,7 +13,8 @@ Three sheets per source document, in this order:
     the financial checks and their verdicts.
 
 A combined workbook (many files in, one workbook out) adds a ``Summary`` sheet and
-one data sheet per file named after its bank (``Axis``, ``SBI``, …), then a
+one data sheet per file named after its bank (``Axis``, ``SBI``, …) — read from the
+statement's own letterhead first, with the filename as the fallback — then a
 ``Clean Data`` sheet holding every file's rows, with ``Source`` naming both the
 file and the page, and a ``Validation`` sheet. Combined workbooks carry no layout
 sheets: each file's own workbook already has its ``Original Layout``.
@@ -93,7 +94,9 @@ def build_combined(analyses: list[dict], options: dict) -> bytes:
         # Bank by bank: one sheet per file, named the way a person files it.
         used = {"summary", "clean data", "validation"}
         for analysis in analyses:
-            name = _bank_sheet_name(analysis["filename"], used)
+            name = _bank_sheet_name(
+                analysis["filename"], used, analysis.get("header_lines") or ()
+            )
             used.add(name.casefold())
             _data_sheet(wb.create_sheet(name), analysis["extract"])
         _combined_data_sheet(wb.create_sheet("Clean Data"), analyses)
@@ -458,7 +461,7 @@ def _safe_text(value: str) -> str:
     return value
 
 
-# Filename stems are matched to the bank a person would name the sheet after.
+# Filename and letterhead text are matched to the bank a person would name a sheet after.
 BANK_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\baxis\b", "Axis"),
     (r"\bsbi\b|\bstate bank of india\b", "SBI"),
@@ -487,22 +490,31 @@ BANK_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _bank_sheet_name(filename: str, used: set[str]) -> str:
-    """The bank a statement came from, as a sheet name.
+def _bank_from_text(text: str) -> str:
+    """The bank a piece of text names, or an empty string.
 
-    ``axis_oct_statement.pdf`` becomes ``Axis`` rather than a numbered layout
-    sheet. An unrecognised file falls back to its first two words, and a repeat
-    gets a number, because Excel refuses two sheets with the same name.
+    Underscores and digits are word characters, so "axis_oct" has no ``\b``
+    before "axis"; every run of punctuation is turned into a space first.
     """
-    stem = _stem(filename)
-    # Underscores and digits are word characters, so "axis_oct" has no \b before
-    # "axis"; match against a space-separated form instead.
-    haystack = re.sub(r"[^A-Za-z0-9]+", " ", stem)
-    label = ""
+    haystack = re.sub(r"[^A-Za-z0-9]+", " ", text or "")
     for pattern, name in BANK_PATTERNS:
         if re.search(pattern, haystack, re.IGNORECASE):
-            label = name
-            break
+            return name
+    return ""
+
+
+def _bank_sheet_name(
+    filename: str, used: set[str], header_lines: list[str] | tuple[str, ...] = ()
+) -> str:
+    """The bank a statement came from, as a sheet name.
+
+    The statement's own letterhead comes first: an upload called
+    ``statement_2.pdf`` still lands on ``Axis`` when page one says "Axis Bank".
+    The filename is the fallback, then its first two words, and a repeat gets a
+    number because Excel refuses two sheets with the same name.
+    """
+    stem = _stem(filename)
+    label = _bank_from_text(" ".join(header_lines)) or _bank_from_text(stem)
     if not label:
         words = [word for word in re.split(r"[^A-Za-z0-9&]+", stem) if word]
         label = " ".join(words[:2]) or "Statement"
