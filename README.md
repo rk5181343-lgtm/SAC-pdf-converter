@@ -78,8 +78,14 @@ Every source file produces a workbook with three sheets:
 | Sheet | Purpose |
 | --- | --- |
 | **Original Layout** | Every page of the document recreated in Excel cells on one sheet: headings, table structure, fills, fonts, row heights and embedded images, one page after another with a `Page 2`, `Page 3` … marker between them. Can be switched off for a faster, smaller workbook. |
-| **Clean Data** | One record per row, one field per column, for every page of every file. Real Excel dates, numeric amounts, frozen header, autofilter — ready for `SUM`, pivots, sort and copy/paste. The opening and closing balance rows are highlighted in place (amber and teal, with a note on the balance cell) — only where the statement itself prints them (`Opening balance`, `Brought forward`, `Balance b/f`, `Closing balance`, `Carried forward`, `Balance c/f`); a page with no such line never gets a tinted transaction. The last column, `Source`, names the page the row was read from (`Page 3`, or `jan · Page 3` in a combined workbook). |
+| **Clean Data** | One record per row, one field per column, for every page of every file. Real Excel dates, numeric amounts, frozen header, autofilter — ready for `SUM`, pivots, sort and copy/paste. The opening and closing balance rows are highlighted in place (amber and teal, with a note on the balance cell) — only where the statement actually prints them (`Opening balance`, `Brought forward`, `Balance b/f`, `Closing balance`, `Carried forward`, `Balance c/f`), so a page with no such line never gets a tinted transaction. The last column, `Source`, names the page the row was read from (`Page 3`, or `jan · Page 3` in a combined workbook). |
 | **Validation** | Counts, totals, running-balance chain, duplicates and page coverage — each `Passed` / `Warning` / `Error` / `Not Applicable`. Source values are never altered to make totals agree. |
+
+With several files, **Also build one combined workbook** adds `Combined workbook.xlsx`:
+a `Summary` sheet, then one sheet per file named after its bank (`Axis`, `SBI`,
+`HDFC`, …), a `Clean Data` sheet with every file's rows, and `Validation`. The
+combined workbook holds no layout sheets — each file's own workbook still has its
+`Original Layout`.
 
 How it works, in one page: `app/converter/pdf_source.py` opens the PDF once and
 exposes positioned words, tables and image boxes (with OCR when a page has no text

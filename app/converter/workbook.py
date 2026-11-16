@@ -12,9 +12,11 @@ Three sheets per source document, in this order:
 ``Validation``
     the financial checks and their verdicts.
 
-A combined workbook (many files in, one workbook out) adds a ``Summary`` sheet,
-one stacked layout sheet per file and one ``Clean Data`` sheet holding every
-file's rows, with ``Source`` naming both the file and the page.
+A combined workbook (many files in, one workbook out) adds a ``Summary`` sheet and
+one data sheet per file named after its bank (``Axis``, ``SBI``, …), then a
+``Clean Data`` sheet holding every file's rows, with ``Source`` naming both the
+file and the page, and a ``Validation`` sheet. Combined workbooks carry no layout
+sheets: each file's own workbook already has its ``Original Layout``.
 """
 from __future__ import annotations
 
@@ -87,16 +89,13 @@ def build_combined(analyses: list[dict], options: dict) -> bytes:
 
     _summary_sheet(wb.create_sheet("Summary"), analyses)
 
-    for index, analysis in enumerate(analyses, start=1):
-        if not sheets.get("layout", True):
-            break
-        stacked = _stack_layouts(analysis["layouts"])
-        if stacked is None or stacked.is_empty():
-            continue
-        stem = _stem(analysis["filename"])
-        _layout_sheet(wb.create_sheet(_sheet_name(f"Layout {index} {stem}")), stacked)
-
     if sheets.get("data", True):
+        # Bank by bank: one sheet per file, named the way a person files it.
+        used = {"summary", "clean data", "validation"}
+        for analysis in analyses:
+            name = _bank_sheet_name(analysis["filename"], used)
+            used.add(name.casefold())
+            _data_sheet(wb.create_sheet(name), analysis["extract"])
         _combined_data_sheet(wb.create_sheet("Clean Data"), analyses)
     if sheets.get("validation", True):
         _combined_validation_sheet(wb.create_sheet("Validation"), analyses)
@@ -384,8 +383,8 @@ def _balance_marks(result: ExtractResult) -> dict[int, str]:
     """Which record is the opening balance and which is the closing balance.
 
     Only rows that actually say so are marked. A statement that never prints
-    "opening balance", "brought forward", "closing balance" or "carried
-    forward" gets no tint at all: guessing from position would paint an ordinary
+    "opening balance", "brought forward", "closing balance" or "carried forward"
+    gets no tint at all: guessing from position would paint an ordinary
     transaction, which reads as a reconciliation claim that is not there.
     """
     if not result.records:
@@ -457,6 +456,63 @@ def _safe_text(value: str) -> str:
     if value and value.startswith("="):
         return "'" + value
     return value
+
+
+# Filename stems are matched to the bank a person would name the sheet after.
+BANK_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"\baxis\b", "Axis"),
+    (r"\bsbi\b|\bstate bank of india\b", "SBI"),
+    (r"\bhdfc\b", "HDFC"),
+    (r"\bicici\b", "ICICI"),
+    (r"\bkotak\b", "Kotak"),
+    (r"\bidfc\b", "IDFC First"),
+    (r"\bindusind\b", "IndusInd"),
+    (r"\byes bank\b", "Yes Bank"),
+    (r"\bpunjab national\b|\bpnb\b", "PNB"),
+    (r"\bbank of baroda\b|\bbaroda\b", "Bank of Baroda"),
+    (r"\bcanara\b", "Canara"),
+    (r"\bunion bank\b", "Union Bank"),
+    (r"\bfederal\b", "Federal"),
+    (r"\brbl\b", "RBL"),
+    (r"\bbandhan\b", "Bandhan"),
+    (r"\bau small finance\b|\bau bank\b", "AU Bank"),
+    (r"\bindian overseas\b|\biob\b", "IOB"),
+    (r"\bindian bank\b", "Indian Bank"),
+    (r"\bcentral bank\b", "Central Bank"),
+    (r"\buco\b", "UCO"),
+    (r"\bhsbc\b", "HSBC"),
+    (r"\bciti\b|\bcitibank\b", "Citibank"),
+    (r"\bstandard chartered\b", "Standard Chartered"),
+    (r"\bdbs\b", "DBS"),
+)
+
+
+def _bank_sheet_name(filename: str, used: set[str]) -> str:
+    """The bank a statement came from, as a sheet name.
+
+    ``axis_oct_statement.pdf`` becomes ``Axis`` rather than a numbered layout
+    sheet. An unrecognised file falls back to its first two words, and a repeat
+    gets a number, because Excel refuses two sheets with the same name.
+    """
+    stem = _stem(filename)
+    # Underscores and digits are word characters, so "axis_oct" has no \b before
+    # "axis"; match against a space-separated form instead.
+    haystack = re.sub(r"[^A-Za-z0-9]+", " ", stem)
+    label = ""
+    for pattern, name in BANK_PATTERNS:
+        if re.search(pattern, haystack, re.IGNORECASE):
+            label = name
+            break
+    if not label:
+        words = [word for word in re.split(r"[^A-Za-z0-9&]+", stem) if word]
+        label = " ".join(words[:2]) or "Statement"
+    label = _sheet_name(label[:31])
+    name, suffix = label, 2
+    while name.casefold() in used:
+        tail = f" {suffix}"
+        name = label[: 31 - len(tail)] + tail
+        suffix += 1
+    return name
 
 
 def _sheet_name(name: str) -> str:
