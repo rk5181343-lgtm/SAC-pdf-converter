@@ -9,7 +9,9 @@ keeps every page's rows and every record remembers the page it was read from.
 """
 from __future__ import annotations
 
+import bisect
 import re
+import statistics
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -326,24 +328,35 @@ def detect_doc_type(filename: str, pages: list[PageData]) -> tuple[str, float]:
 
 
 # --------------------------------------------------------------------- tables
-def page_tables(page: PageData) -> list[list[list[str]]]:
+def page_tables(page: PageData, starts: list[float] | None = None) -> list[list[list[str]]]:
     tables = [table.rows for table in page.tables if table.rows]
-    if tables:
-        best = _pick_table(tables)
-        if _header_index(best) is not None:
-            return [best]
+    clustered = cluster_table(page, starts=starts)
+    if starts:
+        # The columns were printed on another page; cut this page at the same
+        # headings instead of guessing them a second time.
+        return [clustered] if clustered else ([_pick_table(tables)] if tables else [])
+    clustered_has_header = bool(clustered) and _header_index(clustered) is not None
+    if not tables:
+        return [clustered] if clustered else []
+    best = _pick_table(tables)
+    if _header_index(best) is None:
         # pdfplumber's box starts at the first ruling, which on Axis and SBI sits
         # below the printed header: the table then has no column names and every
         # value is read as a heading. The clustered pass keeps the header line.
-        clustered = cluster_table(page)
-        if clustered and _header_index(clustered) is not None:
-            return [clustered]
-        return [best]
-    clustered = cluster_table(page)
-    return [clustered] if clustered else []
+        return [clustered] if clustered_has_header else [best]
+    if clustered_has_header and (
+        max(map(len, clustered)) > max(map(len, best))
+        or not any(table.ruled for table in page.tables)
+    ):
+        # Both found the header, but on a page without vertical rules pdfplumber
+        # has to guess where a column ends: it merges SBI's Description with Ref
+        # No., ICICI's Debit with Credit, and shifts Axis' TOTAL row one cell
+        # left. The clustered table cuts at the gutters and the headings instead.
+        return [clustered]
+    return [best]
 
 
-def cluster_table(page: PageData) -> list[list[str]]:
+def cluster_table(page: PageData, starts: list[float] | None = None) -> list[list[str]]:
     """Rebuild a table from positioned words when the PDF has no ruling lines.
 
     Column boundaries are taken from the page as a whole rather than from each
@@ -359,22 +372,32 @@ def cluster_table(page: PageData) -> list[list[str]]:
         return []
     start = _table_start(lines)
     header_at = _header_line_index(lines, start)
-    # Bands are learned from the data lines: a wide heading such as "Transaction
-    # Date (dd/mm/yyyy)" runs across the gutters, and counting it as content
-    # closed every column it crossed, welding headings and values together.
-    band_lines = [
-        line for index, line in enumerate(lines) if index >= start and index != header_at
-    ]
-    bands = _column_bands(band_lines if len(band_lines) >= 2 else lines[start:], page.width)
-    if bands:
-        rows = [[_band_text(line, band) for band in bands] for line in lines]
+    if not starts:
+        starts = _label_starts(lines[header_at]) if header_at is not None else []
+    if len(starts) >= 2:
+        rows = _rows_from_labels(lines, starts)
     else:
-        rows = [_split_cells(line) for line in lines]
+        # No headings to go by: fall back to gutters learned from the data lines.
+        # A wide heading such as "Transaction Date (dd/mm/yyyy)" runs across
+        # them, so the heading line is left out of the count.
+        band_lines = [
+            line for index, line in enumerate(lines) if index >= start and index != header_at
+        ]
+        bands = _column_bands(band_lines if len(band_lines) >= 2 else lines[start:], page.width)
+        rows = (
+            [[_band_text(line, band) for band in bands] for line in lines]
+            if bands
+            else [_split_cells(line) for line in lines]
+        )
     rows = [row for row in rows if any(cell for cell in row)]
     if len(rows) < 2:
         return rows
     width = max(len(row) for row in rows)
-    return [row + [""] * (width - len(row)) for row in rows]
+    rows = [row + [""] * (width - len(row)) for row in rows]
+    # A band that caught nothing in any line is the margin beside the table, not
+    # a column: drop it rather than presenting an empty "Column 1".
+    used = [index for index in range(width) if any(row[index] for row in rows)]
+    return [[row[index] for index in used] for row in rows]
 
 
 def _group_rows(words, tolerance: float | None = None) -> list[list]:
@@ -394,10 +417,19 @@ def _group_rows(words, tolerance: float | None = None) -> list[list]:
 
 
 def _split_cells(words) -> list[str]:
+    """Split a line into cells at gaps wider than the words' own spacing.
+
+    The limit comes from the gaps between the words, not from how wide they are:
+    a line of dates made every token wide, so the old width-based limit joined
+    the whole row into one cell, no row looked like data, and the printed header
+    above it was never found.
+    """
     if not words:
         return []
-    widths = sorted(word.x1 - word.x0 for word in words) or [10.0]
-    gap_limit = max(6.0, widths[len(widths) // 2] * 0.9)
+    gaps = sorted(
+        later.x0 - earlier.x1 for earlier, later in zip(words, words[1:]) if later.x0 > earlier.x1
+    )
+    gap_limit = max(4.5, (gaps[len(gaps) // 2] if gaps else 0.0) * 2.2)
     cells: list[list] = [[words[0]]]
     for previous, word in zip(words, words[1:]):
         if word.x0 - previous.x1 > gap_limit:
@@ -415,7 +447,9 @@ def _table_start(lines: list[list]) -> int:
     its first printed amount, which leaves room for a header that wrapped.
     """
     for index, line in enumerate(lines):
-        if any(_looks_like_amount(cell) for cell in _split_cells(line)):
+        # Word by word: a line of dates can be split into one wide cell, and then
+        # the amount inside it would never be seen.
+        if any(_looks_like_amount(word.text) for word in line):
             return max(0, index - 2)
     return 0
 
@@ -428,9 +462,81 @@ def _header_line_index(lines: list[list], start: int = 0) -> int | None:
     the heading.
     """
     offset = max(0, start - 4)
-    window = lines[offset:offset + 18]
-    index = _header_index([_split_cells(line) for line in window])
-    return offset + index if index is not None else None
+    window = lines[offset:offset + 24]
+    # The table proper starts at the first line with several facts. Two are not
+    # enough: the period line ("From : 01/09/2026 To : 30/09/2026") has exactly
+    # two and sits above the real heading, which then went unseen.
+    limit = len(window)
+    for index, line in enumerate(window):
+        # A transaction line carries both dates and amounts. A period line has
+        # two dates but only an account number, and counting that number as an
+        # amount made the title block look like the start of the table.
+        dates = sum(1 for word in line if parse_date(word.text) is not None)
+        # Printed amounts carry a decimal point or a thousands separator; an
+        # account number is bare digits and must not pass for an amount.
+        amounts = sum(
+            1 for word in line
+            if ("." in word.text or "," in word.text) and _looks_like_amount(word.text)
+        )
+        if dates >= 1 and amounts >= 2:
+            limit = index
+            break
+    best: int | None = None
+    best_score = 0
+    for index in range(limit):
+        line = window[index]
+        # A title line can carry the statement's "From … To …" dates, and its
+        # few words would make a three-column table; a heading names columns and
+        # holds no dates.
+        if any(parse_date(word.text) is not None for word in line):
+            continue
+        score = _header_score([" ".join(word.text for word in line)])
+        if score >= best_score and score >= 3:
+            best, best_score = index, score
+    return offset + best if best is not None else None
+
+
+def _label_starts(header: list) -> list[float]:
+    """Left edges of the printed headings on one line.
+
+    A label is a run of words that touch or sit inside one another; a new label
+    begins only once a word starts past the end of the previous one. A heading
+    that overruns its neighbour stays joined instead of inventing a column.
+    """
+    if not header:
+        return []
+    # A space inside a heading is about 2.5 pt at statement type sizes, while the
+    # gap between two columns is wider; 4.5 pt keeps "Value Date" whole and still
+    # separates "Value Date" from "Txn Posted Date".
+    threshold = 4.5
+    spans: list[list[float]] = [[header[0].x0, header[0].x1]]
+    for word in header[1:]:
+        if word.x0 <= spans[-1][1] + threshold:
+            spans[-1][1] = max(spans[-1][1], word.x1)
+        else:
+            spans.append([word.x0, word.x1])
+    return [span[0] for span in spans]
+
+
+def _rows_from_labels(
+    lines: list[list], starts: list[float]
+) -> list[list[str]]:
+    """Cut every line at the printed headings instead of at inferred gutters.
+
+    Looking for empty vertical strips fails exactly where it matters: one long
+    description closes the gutter to the next column, so SBI's Description and
+    Ref No., and a narrow Branch/Debit/Credit block, came out as one cell. The
+    headings do not move, so each word is given to the heading whose left edge
+    is the last one before it.
+    """
+    rows: list[list[str]] = []
+    for line in lines:
+        cells: list[list] = [[] for _ in starts]
+        for word in line:
+            index = bisect.bisect_right(starts, word.x0 + 0.5) - 1
+            cells[max(0, index)].append(word)
+        rows.append([" ".join(word.text for word in cell).strip() for cell in cells])
+    return rows
 
 
 def _column_bands(lines: list[list], page_width: float) -> list[tuple[float, float]]:
@@ -671,6 +777,14 @@ def _is_total_row(cells: list[str]) -> bool:
     return False
 
 
+FOOTER_PATTERN = re.compile(
+    r"does not require a signature|computer generated|constituent of any discrepancy|"
+    r"no signature (is )?required|system generated|please examine|for any discrepancy|"
+    r"registered office|this is a (system|computer)|subject to (realisation|verification)",
+    re.IGNORECASE,
+)
+
+
 def _pick_table(tables: list[list[list[str]]]) -> list[list[str]]:
     if not tables:
         return []
@@ -760,10 +874,17 @@ def _merge_continuations(
         has_date = bool(date_column and parse_date(record.get(date_column)))
         has_number = any(parse_number(record.get(column)) is not None for column in number_columns)
         empty_elsewhere = not any(clean_text(record.get(column, "")) for column in others)
+        words_only = not has_date and not has_number
+        boilerplate = bool(FOOTER_PATTERN.search(text))
+        after_total = bool(kept_flags) and kept_flags[-1]
         # A line with no date and no amount is a wrapped narrative, a section
-        # heading or a page footer, not a record: its words join the row above
-        # instead of becoming a blank row in the sheet.
-        if kept and text and not flag and (empty_elsewhere or (not has_date and not has_number)):
+        # heading or a page footer. It joins the row above only while that row
+        # is a real transaction: after the TOTAL row, and for the boilerplate
+        # every statement prints under the table, it is noise and is dropped
+        # instead of being glued onto the last transaction.
+        if words_only and (boilerplate or after_total):
+            continue
+        if kept and text and not flag and (empty_elsewhere or words_only):
             previous = kept[-1]
             extra = " ".join(
                 clean_text(record.get(column, "")) for column in text_columns if column != description_column
@@ -846,10 +967,24 @@ def extract(source: PdfSource, filename: str = "") -> ExtractResult:
     # One table per page, so a statement that runs over several pages keeps every
     # page's rows and every row remembers the page it came from. The largest table
     # decides the columns; matching tables on the other pages continue the set.
+    # A continuation page often prints no headings. The page that does print
+    # them supplies the column positions for the rest, so those pages are cut at
+    # the same places instead of at bands guessed from their own rows.
+    own_starts: dict[int, list[float]] = {}
+    for page in pages:
+        lines = [line for line in _group_rows(page.words) if line]
+        if not lines:
+            continue
+        header_at = _header_line_index(lines, _table_start(lines))
+        starts = _label_starts(lines[header_at]) if header_at is not None else []
+        if len(starts) >= 2:
+            own_starts[page.index] = starts
+    shared_starts = max(own_starts.values(), key=len) if own_starts else []
+
     blocks: list[tuple[int, list[list[str]]]] = []
     tables_found = 0
     for page in pages:
-        tables = page_tables(page)
+        tables = page_tables(page, starts=own_starts.get(page.index, shared_starts or None))
         tables_found += len(tables)
         best = _pick_table(tables) if tables else []
         if best:

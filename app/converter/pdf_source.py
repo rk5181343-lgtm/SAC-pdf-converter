@@ -52,6 +52,7 @@ class Word:
 class TableData:
     rows: list[list[str]]
     bbox: tuple[float, float, float, float] | None = None
+    ruled: bool = False
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -368,7 +369,15 @@ class PdfSource:
                 cleaned.append([(cell or "").strip() for cell in row])
             if any(any(cell for cell in row) for row in cleaned):
                 bbox = getattr(table, "bbox", None)
-                tables.append(TableData(rows=cleaned, bbox=tuple(bbox) if bbox else None))
+                tables.append(
+                    TableData(
+                        rows=cleaned,
+                        bbox=tuple(bbox) if bbox else None,
+                        # With no vertical rules pdfplumber guesses the columns from
+                        # text, and its cells can merge a heading with its value.
+                        ruled=bool(getattr(page, "vertical_edges", [])),
+                    )
+                )
         return tables
 
     def _image_boxes(self, page) -> list[tuple[float, float, float, float]]:
